@@ -11,6 +11,11 @@ fi
 
 REAL_USER="${SUDO_USER:-$USER}"
 
+# Install ipmitool if needed
+if ! command -v ipmitool &>/dev/null; then
+    apt-get update && apt-get install -y ipmitool
+fi
+
 # Create ipmi group if needed
 if ! getent group ipmi >/dev/null; then
     groupadd ipmi

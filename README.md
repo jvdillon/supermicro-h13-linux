@@ -63,12 +63,19 @@ commands.
 ## IPMI Access Setup
 
 By default, `/dev/ipmi*` devices require root. The `setup-ipmi-access.sh`
-script creates an `ipmi` group and udev rules for unprivileged access:
+script configures unprivileged access:
 
 ```bash
 sudo ./setup-ipmi-access.sh
 # Log out and back in
 ```
+
+What it does:
+- Installs `ipmitool` if not present
+- Creates `ipmi` group and adds current user
+- Loads `ipmi_devintf` and `ipmi_si` kernel modules
+- Persists modules in `/etc/modules`
+- Creates udev rule for `/dev/ipmi*` group permissions
 
 To add other users:
 ```bash
