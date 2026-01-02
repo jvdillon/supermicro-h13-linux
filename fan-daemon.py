@@ -185,7 +185,7 @@ class HardwareInterface(abc.ABC):
         """Detect GPUs and return (count, source)."""
 
 
-class SupermicroHardware(HardwareInterface):
+class SupermicroH13(HardwareInterface):
     """Hardware interface for Supermicro motherboards."""
 
     CMD_GET_FAN_MODE = ["ipmitool", "raw", "0x30", "0x45", "0x00"]
@@ -583,7 +583,7 @@ class FanDaemon:
 
 def main() -> None:
     config = parse_args()
-    hardware = SupermicroHardware(config)
+    hardware = SupermicroH13(config)
     daemon = FanDaemon(config, hardware)
     daemon.run()
 
