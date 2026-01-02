@@ -38,22 +38,22 @@
 #   https://www.seagate.com/content/dam/seagate/migrated-assets/www-content/datasheets/pdfs/exos-x18-channel-DS2045-4-2106US-en_US.pdf
 #
 # FAN1:
-#   ARCTIC Freezer 4U-SP5 (CPU cooler)
+#   (CPU cooler)
+#   ARCTIC Freezer 4U-SP5
 #   https://www.arctic.de/en/Freezer-4U-SP5/ACFRE00158A
 #   https://www.arctic.de/media/d2/27/24/1731948520/Spec_Sheet_Freezer_4U_SP5_EN.pdf
 #
 # FAN2-4:
+#   (2:Top Intake, 3:Front Intake, 4:Rear Exhaust)
 #   ARCTIC P14 Pro PST
 #   https://www.arctic.de/en/P14-Pro-PST/ACFAN00314A
 #   https://www.arctic.de/media/8b/c2/0c/1753621758/Spec_Sheet_P14_Pro_PST_CO_EN.pdf
 #
-# FANA:
+# FANA-B:
+#   (A:Side Intake, B:Unused)
 #   ARCTIC P12 Slim PWM PST
 #   https://www.arctic.de/en/P12-Slim-PWM-PST/ACFAN00187A
 #   https://www.arctic.de/media/2b/83/fd/1690274238/Spec_Sheet_P12_Slim_PWM_PST_EN.pdf
-#
-# FANB:
-#   (unused)
 
 set -e
 
