@@ -60,9 +60,9 @@ echo ""
 #   unr (upper non-recoverable): 94
 #
 # New values tuned for RTX 5090 (normal operating temps up to ~87C):
-#   unc: 89 - early warning before throttling
 #   ucr: 91 - critical alert before hardware limit
 #   unr: 93 - emergency threshold
+# Note: unc (upper non-critical) not supported by GPU sensors on this board
 
 # H13SSL-N has 5 PCIe slots (3x16, 2x8)
 GPU_SLOTS="GPU1 GPU2 GPU3 GPU4 GPU5"
@@ -71,8 +71,9 @@ echo "Setting GPU temperature thresholds..."
 for slot in $GPU_SLOTS; do
     sensor="${slot} Temp"
     ipmitool sensor get "$sensor" >/dev/null 2>&1 || continue
-    ipmitool sensor thresh "$sensor" unc 89 ucr 91 unr 93
-    echo "  $sensor: unc=89 ucr=91 unr=93"
+    ipmitool sensor thresh "$sensor" ucr 91
+    ipmitool sensor thresh "$sensor" unr 93
+    echo "  $sensor: ucr=91 unr=93"
 done
 
 # Fan Thresholds
