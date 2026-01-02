@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-PID-controlled fan daemon for server motherboards.
+Fan daemon for server motherboards using linear temperature mapping.
 
-Zones:
-  Zone 0: CPU cooler + case fans, input: max(CPU, hottest GPU)
-  Zone 1: Auxiliary fans (GPU/RAM), input: hottest GPU
+Reads temps from: CPU (IPMI), GPU (nvidia-smi/IPMI), HDD (smartctl), NVMe (nvme-cli)
+Uses max temp across all sources as input.
+Linear maps temp_min->temp_max to min_speed->max_speed.
+Sensitivity dead-band prevents hunting on small temp changes.
 
-GPU temps: nvidia-smi preferred, IPMI fallback
 Fail-safe: Any error -> full speed (100%)
 
 Run with --help for configuration options.
@@ -36,26 +36,30 @@ class Temps:
 
     cpu_celsius: float
     gpus_celsius: list[float]
+    hdds_celsius: list[float]
+    nvmes_celsius: list[float]
 
     @property
-    def gpu_max_celsius(self) -> float | None:
-        return max(self.gpus_celsius) if self.gpus_celsius else None
+    def max_celsius(self) -> float:
+        """Return max temp across all sources."""
+        all_temps = [self.cpu_celsius] + self.gpus_celsius + self.hdds_celsius + self.nvmes_celsius
+        return max(all_temps)
 
 
 @dataclasses.dataclass(slots=True)
 class Config:
     """Daemon configuration."""
 
-    gpu_target_celsius: float = 75.0
-    cpu_target_celsius: float = 65.0
+    temp_min_celsius: float = 40.0
+    temp_max_celsius: float = 80.0
     min_speed_percent: int = 15
     max_speed_percent: int = 100
-    pid_proportional: float = 3.0
-    pid_integral: float = 0.1
-    pid_derivative: float = 1.0
     speed_step_percent: int = 10
+    sensitivity_celsius: float = 2.0
     interval_seconds: float = 5.0
     gpu_slots: int = 5
+    hdd_devices: tuple[str, ...] = ()
+    nvme_devices: tuple[str, ...] = ()
     temp_min_valid_celsius: float = 0.0
     temp_max_valid_celsius: float = 120.0
     cmd_timeout_seconds: float = 5.0
@@ -64,21 +68,21 @@ class Config:
 def parse_args() -> Config:
     """Parse command-line arguments and return Config."""
     parser = argparse.ArgumentParser(
-        description="PID-controlled fan daemon for server motherboards",
+        description="Fan daemon for server motherboards",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     d = Config()
     parser.add_argument(
-        "--gpu-target",
-        type=type(d.gpu_target_celsius),
-        default=d.gpu_target_celsius,
-        help="GPU target temperature (C)",
+        "--temp-min",
+        type=type(d.temp_min_celsius),
+        default=d.temp_min_celsius,
+        help="Temp for min fan speed (C)",
     )
     parser.add_argument(
-        "--cpu-target",
-        type=type(d.cpu_target_celsius),
-        default=d.cpu_target_celsius,
-        help="CPU target temperature (C)",
+        "--temp-max",
+        type=type(d.temp_max_celsius),
+        default=d.temp_max_celsius,
+        help="Temp for max fan speed (C)",
     )
     parser.add_argument(
         "--min-speed",
@@ -93,28 +97,16 @@ def parse_args() -> Config:
         help="Maximum fan speed (%%)",
     )
     parser.add_argument(
-        "--pid-proportional",
-        type=type(d.pid_proportional),
-        default=d.pid_proportional,
-        help="PID proportional gain",
-    )
-    parser.add_argument(
-        "--pid-integral",
-        type=type(d.pid_integral),
-        default=d.pid_integral,
-        help="PID integral gain",
-    )
-    parser.add_argument(
-        "--pid-derivative",
-        type=type(d.pid_derivative),
-        default=d.pid_derivative,
-        help="PID derivative gain",
-    )
-    parser.add_argument(
         "--speed-step",
         type=type(d.speed_step_percent),
         default=d.speed_step_percent,
         help="Fan speed step size (%%)",
+    )
+    parser.add_argument(
+        "--sensitivity",
+        type=type(d.sensitivity_celsius),
+        default=d.sensitivity_celsius,
+        help="Ignore temp changes smaller than this (C)",
     )
     parser.add_argument(
         "--interval",
@@ -128,18 +120,36 @@ def parse_args() -> Config:
         default=d.gpu_slots,
         help="Number of PCIe GPU slots for IPMI fallback",
     )
+    parser.add_argument(
+        "--hdd-devices",
+        type=str,
+        default="",
+        help="Comma-separated HDD paths (e.g., /dev/sda,/dev/sdb)",
+    )
+    parser.add_argument(
+        "--nvme-devices",
+        type=str,
+        default="",
+        help="Comma-separated NVMe paths (e.g., /dev/nvme0)",
+    )
     args = parser.parse_args()
+    if args.temp_min >= args.temp_max:
+        parser.error("--temp-min must be less than --temp-max")
+    if args.min_speed >= args.max_speed:
+        parser.error("--min-speed must be less than --max-speed")
+    hdd_devices = tuple(d.strip() for d in args.hdd_devices.split(",") if d.strip())
+    nvme_devices = tuple(d.strip() for d in args.nvme_devices.split(",") if d.strip())
     return Config(
-        gpu_target_celsius=args.gpu_target,
-        cpu_target_celsius=args.cpu_target,
+        temp_min_celsius=args.temp_min,
+        temp_max_celsius=args.temp_max,
         min_speed_percent=args.min_speed,
         max_speed_percent=args.max_speed,
-        pid_proportional=args.pid_proportional,
-        pid_integral=args.pid_integral,
-        pid_derivative=args.pid_derivative,
         speed_step_percent=args.speed_step,
+        sensitivity_celsius=args.sensitivity,
         interval_seconds=args.interval,
         gpu_slots=args.gpu_slots,
+        hdd_devices=hdd_devices,
+        nvme_devices=nvme_devices,
     )
 
 
@@ -153,6 +163,14 @@ class HardwareInterface(abc.ABC):
     @abc.abstractmethod
     def read_gpu_temps(self) -> list[float] | None:
         """Read GPU temperatures. Returns [] if no GPUs, None on failure."""
+
+    @abc.abstractmethod
+    def read_hdd_temps(self) -> list[float]:
+        """Read HDD temperatures. Returns [] if none configured."""
+
+    @abc.abstractmethod
+    def read_nvme_temps(self) -> list[float]:
+        """Read NVMe temperatures. Returns [] if none configured."""
 
     @abc.abstractmethod
     def set_zone_speed(self, zone: int, percent: int) -> bool:
@@ -296,16 +314,65 @@ class SupermicroHardware(HardwareInterface):
             self._nvidia_warned = True
         return self._read_gpu_temps_ipmi()
 
+    def read_hdd_temps(self) -> list[float]:
+        """Read HDD temps via smartctl."""
+        temps = []
+        for device in self.config.hdd_devices:
+            success, output = self._run_cmd(["smartctl", "-A", device])
+            if not success:
+                log.warning("Failed to read HDD temp from %s", device)
+                continue
+            for line in output.splitlines():
+                if "Temperature_Celsius" in line or "Airflow_Temperature" in line:
+                    parts = line.split()
+                    if len(parts) >= 10:
+                        try:
+                            temp = float(parts[9])
+                            if (
+                                self.config.temp_min_valid_celsius
+                                <= temp
+                                <= self.config.temp_max_valid_celsius
+                            ):
+                                temps.append(temp)
+                        except ValueError:
+                            pass
+        return temps
+
+    def read_nvme_temps(self) -> list[float]:
+        """Read NVMe temps via nvme-cli."""
+        temps = []
+        for device in self.config.nvme_devices:
+            success, output = self._run_cmd(["nvme", "smart-log", device])
+            if not success:
+                log.warning("Failed to read NVMe temp from %s", device)
+                continue
+            for line in output.splitlines():
+                if line.strip().lower().startswith("temperature"):
+                    parts = line.split(":")
+                    if len(parts) >= 2:
+                        try:
+                            temp_str = parts[1].strip().split()[0]
+                            temp = float(temp_str.replace(",", ""))
+                            if (
+                                self.config.temp_min_valid_celsius
+                                <= temp
+                                <= self.config.temp_max_valid_celsius
+                            ):
+                                temps.append(temp)
+                                break
+                        except (ValueError, IndexError):
+                            pass
+        return temps
+
     def _ensure_full_mode(self) -> bool:
         """Ensure BMC is in full/manual fan mode."""
         success, output = self._run_cmd(self.CMD_GET_FAN_MODE)
-        if success:
-            if output.strip() != self.FAN_MODE_FULL:
-                success, _ = self._run_cmd(self.CMD_SET_FULL_MODE)
-                if not success:
-                    log.error("Failed to set full fan mode")
-                    return False
-                time.sleep(self.MODE_SWITCH_DELAY_SECONDS)
+        if not success or output.strip() != self.FAN_MODE_FULL:
+            success, _ = self._run_cmd(self.CMD_SET_FULL_MODE)
+            if not success:
+                log.error("Failed to set full fan mode")
+                return False
+            time.sleep(self.MODE_SWITCH_DELAY_SECONDS)
         return True
 
     def set_zone_speed(self, zone: int, percent: int) -> bool:
@@ -357,52 +424,19 @@ class SupermicroHardware(HardwareInterface):
         return 0, "none"
 
 
-class PIDController:
-    """PID controller with anti-windup."""
-
-    EPSILON = 1e-6
-
-    def __init__(
-        self,
-        kp: float,
-        ki: float,
-        kd: float,
-        output_min: float,
-        output_max: float,
-    ) -> None:
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
-        self.output_min = output_min
-        self.output_max = output_max
-        self.integral = 0.0
-        self.prev_error = 0.0
-        self.first_run = True
-
-    def update(self, error: float, dt: float) -> float:
-        """Compute PID output given error and time delta."""
-        p_term = self.kp * error
-
-        self.integral += error * dt
-        max_integral = (self.output_max - self.output_min) / (self.ki + self.EPSILON)
-        self.integral = max(-max_integral, min(max_integral, self.integral))
-        i_term = self.ki * self.integral
-
-        if self.first_run:
-            d_term = 0.0
-            self.first_run = False
-        else:
-            d_term = self.kd * (error - self.prev_error) / dt
-        self.prev_error = error
-
-        output = p_term + i_term + d_term
-        return max(self.output_min, min(self.output_max, output))
-
-    def reset(self) -> None:
-        """Reset controller state."""
-        self.integral = 0.0
-        self.prev_error = 0.0
-        self.first_run = True
+def linear_map(
+    value: float,
+    in_min: float,
+    in_max: float,
+    out_min: float,
+    out_max: float,
+) -> float:
+    """Linear interpolation with clamping."""
+    if value <= in_min:
+        return out_min
+    if value >= in_max:
+        return out_max
+    return (value - in_min) / (in_max - in_min) * (out_max - out_min) + out_min
 
 
 class FanDaemon:
@@ -412,21 +446,8 @@ class FanDaemon:
         self.config = config
         self.hardware = hardware
         self.running = False
-        self.pid_zone0 = PIDController(
-            config.pid_proportional,
-            config.pid_integral,
-            config.pid_derivative,
-            config.min_speed_percent,
-            config.max_speed_percent,
-        )
-        self.pid_zone1 = PIDController(
-            config.pid_proportional,
-            config.pid_integral,
-            config.pid_derivative,
-            config.min_speed_percent,
-            config.max_speed_percent,
-        )
-        self.last_time: float | None = None
+        self.last_temp: float | None = None
+        self.last_speed: int | None = None
 
     def _quantize_speed(self, speed: float) -> int:
         """Quantize speed to discrete steps."""
@@ -441,65 +462,75 @@ class FanDaemon:
         gpus = self.hardware.read_gpu_temps()
         if gpus is None:
             return None
-        return Temps(cpu_celsius=cpu, gpus_celsius=gpus)
+        hdds = self.hardware.read_hdd_temps()
+        nvmes = self.hardware.read_nvme_temps()
+        return Temps(
+            cpu_celsius=cpu,
+            gpus_celsius=gpus,
+            hdds_celsius=hdds,
+            nvmes_celsius=nvmes,
+        )
 
     def control_loop(self) -> None:
         """Main control loop iteration."""
-        now = time.monotonic()
-        dt = (
-            self.config.interval_seconds
-            if self.last_time is None
-            else now - self.last_time
-        )
-        self.last_time = now
-
         temps = self.read_all_temps()
         if temps is None:
             log.error("Failed to read temps, going to full speed")
             self.hardware.set_full_speed()
-            self.pid_zone0.reset()
-            self.pid_zone1.reset()
+            self.last_temp = None
+            self.last_speed = None
             return
 
-        cpu_target = self.config.cpu_target_celsius
-        gpu_target = self.config.gpu_target_celsius
-        gpu_max = temps.gpu_max_celsius
+        cfg = self.config
+        max_temp = temps.max_celsius
 
-        # Zone 0: max(CPU, hottest GPU) or CPU-only if no GPUs
-        zone0_input = max(temps.cpu_celsius, gpu_max) if gpu_max else temps.cpu_celsius
-        zone0_speed = self._quantize_speed(
-            self.pid_zone0.update(zone0_input - cpu_target, dt)
+        # Sensitivity check: skip if temp change is below threshold
+        if (
+            self.last_temp is not None
+            and self.last_speed is not None
+            and abs(max_temp - self.last_temp) < cfg.sensitivity_celsius
+        ):
+            return
+
+        # Linear map from temp range to speed range
+        speed = self._quantize_speed(
+            linear_map(
+                max_temp,
+                cfg.temp_min_celsius,
+                cfg.temp_max_celsius,
+                cfg.min_speed_percent,
+                cfg.max_speed_percent,
+            )
         )
 
-        # Zone 1: hottest GPU, or track CPU if no GPUs
-        zone1_input = gpu_max if gpu_max else temps.cpu_celsius
-        zone1_target = gpu_target if gpu_max else cpu_target
-        zone1_speed = self._quantize_speed(
-            self.pid_zone1.update(zone1_input - zone1_target, dt)
-        )
+        # Set both zones to same speed
+        if not self.hardware.set_zone_speed(0, speed):
+            self.hardware.set_full_speed()
+            return
+        if not self.hardware.set_zone_speed(1, speed):
+            self.hardware.set_full_speed()
+            return
 
-        if not self.hardware.set_zone_speed(0, zone0_speed):
-            self.hardware.set_full_speed()
-            return
-        if not self.hardware.set_zone_speed(1, zone1_speed):
-            self.hardware.set_full_speed()
-            return
+        self.last_temp = max_temp
+        self.last_speed = speed
 
         gpu_str = "/".join(f"{t:.0f}" for t in temps.gpus_celsius)
+        hdd_str = "/".join(f"{t:.0f}" for t in temps.hdds_celsius)
+        nvme_str = "/".join(f"{t:.0f}" for t in temps.nvmes_celsius)
         log.info(
-            "cpu=%.0f gpu=[%s] | targets=%.0f/%.0f | zone0=%d%% zone1=%d%%",
+            "cpu=%.0f gpu=[%s] hdd=[%s] nvme=[%s] max=%.0f -> %d%%",
             temps.cpu_celsius,
             gpu_str,
-            cpu_target,
-            gpu_target,
-            zone0_speed,
-            zone1_speed,
+            hdd_str,
+            nvme_str,
+            max_temp,
+            speed,
         )
 
     def shutdown(
         self,
         signum: int | None = None,
-        frame: types.FrameType | None = None,
+        _frame: types.FrameType | None = None,
     ) -> None:
         """Clean shutdown - set fans to full."""
         log.info("Shutting down (signal %s)", signum)
@@ -512,14 +543,16 @@ class FanDaemon:
         signal.signal(signal.SIGTERM, self.shutdown)
         signal.signal(signal.SIGINT, self.shutdown)
 
+        cfg = self.config
         log.info("Fan daemon starting")
         log.info(
-            "Config: gpu_target=%s, cpu_target=%s, PID=%s/%s/%s",
-            self.config.gpu_target_celsius,
-            self.config.cpu_target_celsius,
-            self.config.pid_proportional,
-            self.config.pid_integral,
-            self.config.pid_derivative,
+            "Config: temp=%s-%s speed=%s-%s step=%s sensitivity=%s",
+            cfg.temp_min_celsius,
+            cfg.temp_max_celsius,
+            cfg.min_speed_percent,
+            cfg.max_speed_percent,
+            cfg.speed_step_percent,
+            cfg.sensitivity_celsius,
         )
 
         gpu_count, gpu_source = self.hardware.detect_gpus()
@@ -527,6 +560,10 @@ class FanDaemon:
             log.info("Detected %d GPU(s) via %s", gpu_count, gpu_source)
         else:
             log.info("No GPUs detected")
+        if cfg.hdd_devices:
+            log.info("HDD devices: %s", ", ".join(cfg.hdd_devices))
+        if cfg.nvme_devices:
+            log.info("NVMe devices: %s", ", ".join(cfg.nvme_devices))
 
         if not self.hardware.set_full_speed():
             log.error("Failed to set initial fan speed")
@@ -538,10 +575,8 @@ class FanDaemon:
             except Exception:
                 log.exception("Control loop error")
                 self.hardware.set_full_speed()
-                self.pid_zone0.reset()
-                self.pid_zone1.reset()
 
-            time.sleep(self.config.interval_seconds)
+            time.sleep(cfg.interval_seconds)
 
         self.hardware.set_full_speed()
 

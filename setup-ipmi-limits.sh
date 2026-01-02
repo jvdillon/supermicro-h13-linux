@@ -1,4 +1,7 @@
 #!/bin/bash
+
+set -e
+
 # Example script for setting up IPMI sensor thresholds for Supermicro H13SSL-N
 # Run this on a fresh system to configure optimal thresholds
 #
@@ -55,11 +58,36 @@
 #   https://www.arctic.de/en/P12-Slim-PWM-PST/ACFAN00187A
 #   https://www.arctic.de/media/2b/83/fd/1690274238/Spec_Sheet_P12_Slim_PWM_PST_EN.pdf
 
-set -e
 
-echo "Configuring IPMI sensor thresholds..."
-echo ""
+# =============================================================================
+# Fan Thresholds
+# =============================================================================
+#
+# Fan Thresholds
+# Default values:
+#   lnc (lower non-critical): na
+#   lcr (lower critical): 420 RPM
+#   lnr (lower non-recoverable): na
+#
+# New values:
+#   lnc: 0, lcr: 0, lnr: 0 - disable all low RPM alerts
+#
+# This prevents false alarms when fans spin down at idle
+#
+# H13SSL-N fan headers
+FANS="FAN1 FAN2 FAN3 FAN4 FANA FANB"
+echo "Setting fan thresholds..."
+for fan in $FANS; do
+    ipmitool sensor get "$fan" >/dev/null 2>&1 || continue
+    ipmitool sensor thresh "$fan" lnr 0 lcr 0 lnc 0 >/dev/null 2>&1 || true
+    echo "  $fan: lnr=0 lcr=0 lnc=0"
+done
 
+
+# =============================================================================
+# GPU Temperature Thresholds (commented out - using factory defaults)
+# =============================================================================
+#
 # GPU Temperature Thresholds
 # NVIDIA RTX 5090 thermal limits (per nvidia-smi, dynamic based on power headroom):
 #   Throttle begins: ~87-89C
@@ -71,45 +99,21 @@ echo ""
 #   ucr (upper critical):     92
 #   unr (upper non-recoverable): 94
 #
-# New values tuned for RTX 5090 (normal operating temps up to ~87C):
-#   ucr: 91 - critical alert before hardware limit
-#   unr: 93 - emergency threshold
 # Note: unc (upper non-critical) not supported by GPU sensors on this board
-
-# H13SSL-N has 5 PCIe slots (3x16, 2x8)
-GPU_SLOTS="GPU1 GPU2 GPU3 GPU4 GPU5"
-
-echo "Setting GPU temperature thresholds..."
-for slot in $GPU_SLOTS; do
-    sensor="${slot} Temp"
-    ipmitool sensor get "$sensor" >/dev/null 2>&1 || continue
-    ipmitool sensor thresh "$sensor" ucr 91
-    ipmitool sensor thresh "$sensor" unr 93
-    echo "  $sensor: ucr=91 unr=93"
-done
-
-# Fan Thresholds
-# Default values:
-#   lnc (lower non-critical): na
-#   lcr (lower critical): 420 RPM
-#   lnr (lower non-recoverable): na
 #
-# New values:
-#   lnc: 0, lcr: 0, lnr: 0 - disable all low RPM alerts
+# Uncomment below to add early warning thresholds:
 #
-# This prevents false alarms when fans spin down at idle
+# # H13SSL-N has 5 PCIe slots (3x16, 2x8)
+# GPU_SLOTS="GPU1 GPU2 GPU3 GPU4 GPU5"
+# echo "Setting GPU temperature thresholds..."
+# for slot in $GPU_SLOTS; do
+#     sensor="${slot} Temp"
+#     ipmitool sensor get "$sensor" >/dev/null 2>&1 || continue
+#     ipmitool sensor thresh "$sensor" ucr 92
+#     ipmitool sensor thresh "$sensor" unr 94
+#     echo "  $sensor: ucr=92 unr=94"
+# done
 
-# H13SSL-N fan headers
-FANS="FAN1 FAN2 FAN3 FAN4 FANA FANB"
-
-echo "Setting fan thresholds..."
-for fan in $FANS; do
-    ipmitool sensor get "$fan" >/dev/null 2>&1 || continue
-    ipmitool sensor thresh "$fan" lnr 0 lcr 0 lnc 0 >/dev/null 2>&1 || true
-    echo "  $fan: lnr=0 lcr=0 lnc=0"
-done
-
-echo "Done."
 
 # =============================================================================
 # CPU/VRM Temperature Thresholds (commented out - using factory defaults)
@@ -132,6 +136,7 @@ echo "Done."
 #     echo "  $sensor: unc=90 ucr=100"
 # done
 
+
 # =============================================================================
 # Memory Temperature Thresholds (commented out - using factory defaults)
 # =============================================================================
@@ -150,6 +155,7 @@ echo "Done."
 #     echo "  $sensor: unc=75 ucr=85"
 # done
 
+
 # =============================================================================
 # Chassis Temperature Thresholds (commented out - using factory defaults)
 # =============================================================================
@@ -166,6 +172,7 @@ echo "Done."
 #     ipmitool sensor thresh "$sensor" unc 70 ucr 85
 #     echo "  $sensor: unc=70 ucr=85"
 # done
+
 
 # =============================================================================
 # M.2 SSD Temperature Thresholds (commented out - no reading on this system)
