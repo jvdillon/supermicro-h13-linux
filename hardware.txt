@@ -1,0 +1,75 @@
+Motherboard:
+  Vendor:   Supermicro
+  Model:    H13SSL-N
+  Revision: 2.01
+  Serial:   (hidden)
+  BIOS:     3.6
+  BMC:      1.04
+
+CPU:
+  Model:   AMD Eng Sample: 100-000001247-11
+  Family:  107, Model: 1, Stepping: 0
+  Serial:  (hidden)
+  Cores:   64 cores x 2 threads
+  Sockets: 1
+  Max MHz: 3251.0000
+
+Memory:
+  Total: memory: 130G
+  DIMMA1:
+    Size:         32 GB
+    Speed:        5600 MT/s
+    Manufacturer: SK Hynix
+    Part Number:  HMCG84AGBRA187N
+    Serial:       (hidden)
+  DIMMC1:
+    Size:         32 GB
+    Speed:        5600 MT/s
+    Manufacturer: SK Hynix
+    Part Number:  HMCG84AGBRA187N
+    Serial:       (hidden)
+  DIMMG1:
+    Size:         32 GB
+    Speed:        5600 MT/s
+    Manufacturer: SK Hynix
+    Part Number:  HMCG84AGBRA187N
+    Serial:       (hidden)
+  DIMMI1:
+    Size:         32 GB
+    Speed:        5600 MT/s
+    Manufacturer: SK Hynix
+    Part Number:  HMCG84AGBRA187N
+    Serial:       (hidden)
+
+GPUs:
+  GPU1 (00000000:01:00.0):
+    Model:  NVIDIA GeForce RTX 5090
+    Serial: (hidden)
+    VBIOS:  98.02.2E.00.03
+    Driver: 590.48.01
+  GPU5 (00000000:21:00.0):
+    Model:  NVIDIA GeForce RTX 5090
+    Serial: (hidden)
+    VBIOS:  98.02.2E.00.03
+    Driver: 590.48.01
+
+NVMe:
+  nvme0:
+    Model:    WD_BLACK SN8100 4000GB
+    Firmware: 830ZRR05
+    Serial:   (hidden)
+
+SATA:
+  sda:
+    Model:    ST12000NT001-3LX101
+    Size:     10.9T
+    Firmware: EN01
+    Serial:   (hidden)
+
+Fans:
+  FAN1             | 2660 RPM          | ok
+  FAN2             | 1960 RPM          | ok
+  FAN3             | 1960 RPM          | ok
+  FAN4             | 1960 RPM          | ok
+  FANA             | 1820 RPM          | ok
+  FANB             | no reading        | ns
