@@ -25,10 +25,10 @@ commands.
 
 ### Fan Zones
 
-| Zone | Fans    | Typical Use                    |
-|------|---------|--------------------------------|
+| Zone | Fans    | Typical Use                     |
+|------|---------|---------------------------------|
 | 0    | FAN1-4  | CPU cooler, case intake/exhaust |
-| 1    | FANA-B  | Auxiliary (GPU cooling)        |
+| 1    | FANA-B  | Auxiliary (peripheral cooling)  |
 
 ### Usage
 
