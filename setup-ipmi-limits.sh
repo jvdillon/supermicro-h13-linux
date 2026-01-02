@@ -6,42 +6,54 @@
 # Presumed Hardware Configuration
 # =============================================================================
 #
-# Motherboard: Supermicro H13SSL-N
+# Motherboard:
+#   Supermicro H13SSL-N
 #   https://www.supermicro.com/en/products/motherboard/h13ssl-n
 #   https://www.supermicro.com/manuals/motherboard/H13/MNL-2545.pdf
 #
-# CPU: AMD EPYC 9555 (Turin/Zen 5), 64C/128T, 360W TDP [Engineering Sample]
+# CPU:
+#   AMD EPYC 9555 (Turin/Zen 5), 64C/128T, 360W TDP [Engineering Sample]
 #   https://www.amd.com/en/products/processors/server/epyc/9005-series/amd-epyc-9555.html
 #   https://www.amd.com/content/dam/amd/en/documents/epyc-business-docs/datasheets/amd-epyc-9005-series-processor-datasheet.pdf
 #
-# Memory: A-Tech 128GB Kit (4x32GB) DDR5 5600MHz PC5-44800 ECC RDIMM 1Rx4
+# Memory:
+#   A-Tech 128GB Kit (4x32GB) DDR5 5600MHz PC5-44800 ECC RDIMM 1Rx4
 #   Single Rank 1.1V ECC Registered DIMM 288-Pin (uses SK Hynix HMCG84AGBRA187N)
 #   https://www.amazon.com/Tech-5600MHz-PC5-44800-Registered-Enterprise/dp/B0DMGHRZDW
 #   https://netlist.com/wp-content/uploads/2023/07/SK-Hynix_DRAM_Server-DDR5_Combined_071823.pdf
 #
-# GPU: 2x NVIDIA GeForce RTX 5090 (slots 1 and 5)
+# GPU:
+#   2x NVIDIA GeForce RTX 5090 (slots 1 and 5)
 #   https://www.nvidia.com/en-us/geforce/graphics-cards/50-series/rtx-5090/
 #   https://www.nvidia.com/content/geforce-gtx/GeForce_RTX_5090_User_Guide_Rev1.pdf
 #
-# Storage:
-#   NVMe: WD_Black SN8100 4TB NVMe SSD (PCIe 5.0x4, M.2 2280)
-#         https://www.westerndigital.com/products/internal-drives/wd-black-sn8100-nvme-ssd
-#         https://documents.sandisk.com/content/dam/asset-library/en_us/assets/public/sandisk/product/internal-drives/wd-black-ssd/data-sheet-wd-black-sn8100-nvme-ssd.pdf
-#   SATA: Seagate Exos X18 12TB (ST12000NT001)
-#         https://www.seagate.com/products/enterprise-drives/exos-x/x18/
-#         https://www.seagate.com/content/dam/seagate/migrated-assets/www-content/datasheets/pdfs/exos-x18-channel-DS2045-4-2106US-en_US.pdf
+# NVMe:
+#   WD_Black SN8100 4TB NVMe SSD (PCIe 5.0x4, M.2 2280)
+#   https://www.westerndigital.com/products/internal-drives/wd-black-sn8100-nvme-ssd
+#   https://documents.sandisk.com/content/dam/asset-library/en_us/assets/public/sandisk/product/internal-drives/wd-black-ssd/data-sheet-wd-black-sn8100-nvme-ssd.pdf
 #
-# Fans:
-#   FAN1:   ARCTIC Freezer 4U-SP5 (CPU cooler)
-#           https://www.arctic.de/en/Freezer-4U-SP5/ACFRE00158A
-#           https://www.arctic.de/media/d2/27/24/1731948520/Spec_Sheet_Freezer_4U_SP5_EN.pdf
-#   FAN2-4: ARCTIC P14 Pro PST
-#           https://www.arctic.de/en/P14-Pro-PST/ACFAN00314A
-#           https://www.arctic.de/media/8b/c2/0c/1753621758/Spec_Sheet_P14_Pro_PST_CO_EN.pdf
-#   FANA:   ARCTIC P12 Slim PWM PST
-#           https://www.arctic.de/en/P12-Slim-PWM-PST/ACFAN00187A
-#           https://www.arctic.de/media/2b/83/fd/1690274238/Spec_Sheet_P12_Slim_PWM_PST_EN.pdf
-#   FANB:   (unused)
+# SATA:
+#   Seagate Exos X18 12TB (ST12000NT001)
+#   https://www.seagate.com/products/enterprise-drives/exos-x/x18/
+#   https://www.seagate.com/content/dam/seagate/migrated-assets/www-content/datasheets/pdfs/exos-x18-channel-DS2045-4-2106US-en_US.pdf
+#
+# FAN1:
+#   ARCTIC Freezer 4U-SP5 (CPU cooler)
+#   https://www.arctic.de/en/Freezer-4U-SP5/ACFRE00158A
+#   https://www.arctic.de/media/d2/27/24/1731948520/Spec_Sheet_Freezer_4U_SP5_EN.pdf
+#
+# FAN2-4:
+#   ARCTIC P14 Pro PST
+#   https://www.arctic.de/en/P14-Pro-PST/ACFAN00314A
+#   https://www.arctic.de/media/8b/c2/0c/1753621758/Spec_Sheet_P14_Pro_PST_CO_EN.pdf
+#
+# FANA:
+#   ARCTIC P12 Slim PWM PST
+#   https://www.arctic.de/en/P12-Slim-PWM-PST/ACFAN00187A
+#   https://www.arctic.de/media/2b/83/fd/1690274238/Spec_Sheet_P12_Slim_PWM_PST_EN.pdf
+#
+# FANB:
+#   (unused)
 
 set -e
 
