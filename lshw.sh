@@ -1,5 +1,5 @@
 #!/bin/bash
-# List hardware details for Supermicro H13SSL-N
+# List hardware details
 #
 # Usage: ./lshw.sh [--noserial]
 #   --noserial  Hide serial numbers for privacy when sharing output
@@ -90,28 +90,15 @@ else
 fi
 echo ""
 echo "GPUs:"
-# Fetch GPU data with single nvidia-smi call; use cached IPMI data
-gpu_data=$(nvidia-smi --query-gpu=pci.bus_id,temperature.gpu,name,serial,vbios_version,driver_version --format=csv,noheader 2>/dev/null)
-ipmi_gpu_data=$(echo "$IPMI_SDR_DATA" | grep -i "gpu.*temp")
+# Fetch GPU data sorted by PCIe bus; get IPMI slot names sorted
+mapfile -t gpu_lines < <(nvidia-smi --query-gpu=pci.bus_id,name,serial,vbios_version,driver_version --format=csv,noheader 2>/dev/null | sort)
+mapfile -t ipmi_slots < <(echo "$IPMI_SDR_DATA" | grep -i "gpu.*temp" | grep -v "no reading" | awk '{print $1}' | sort)
 
-# Correlate PCIe bus to IPMI slot by matching temperatures
-echo "$gpu_data" | while IFS=, read -r bus temp name serial vbios driver; do
+# Match GPUs to IPMI slots by sorted order (PCIe enumeration matches physical slot order)
+for i in "${!gpu_lines[@]}"; do
+    IFS=, read -r bus name serial vbios driver <<< "${gpu_lines[$i]}"
     bus=$(echo "$bus" | xargs)
-    temp=$(echo "$temp" | xargs)
-    # Find IPMI slot with closest temperature (within 5°C)
-    slot=""
-    while read -r sensor_line; do
-        sensor_name=$(echo "$sensor_line" | awk '{print $1}')
-        ipmi_temp=$(echo "$sensor_line" | awk -F'|' '{print $2}' | grep -o '[0-9]*')
-        if [ -n "$ipmi_temp" ]; then
-            diff=$((temp - ipmi_temp))
-            [ $diff -lt 0 ] && diff=$((-diff))
-            if [ $diff -le 5 ]; then
-                slot="$sensor_name"
-                break
-            fi
-        fi
-    done <<< "$ipmi_gpu_data"
+    slot="${ipmi_slots[$i]:-}"
     if [ -n "$slot" ]; then
         echo "  $slot ($bus):"
     else
@@ -144,6 +131,6 @@ lsblk -d -o NAME,SIZE,MODEL,SERIAL,TRAN 2>/dev/null | grep sata | while read -r 
 done
 echo ""
 echo "Fans:"
-echo "$IPMI_SDR_DATA" | grep -i fan | while read line; do
+echo "$IPMI_SDR_DATA" | grep -i fan | while read -r line; do
     echo "  $line"
 done

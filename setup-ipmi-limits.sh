@@ -169,7 +169,7 @@ echo "Done."
 # echo "Setting M.2 SSD temperature thresholds..."
 # for sensor in "M2_SSD1 Temp" "M2_SSD2 Temp"; do
 #     ipmitool sensor get "$sensor" >/dev/null 2>&1 || continue
-#     reading=$(ipmitool sdr get "$sensor" 2>/dev/null | grep "Sensor Reading" | grep -v "No Reading")
+#     reading=$(ipmitool sensor get "$sensor" 2>/dev/null | grep "Sensor Reading" | grep -v "na")
 #     [ -z "$reading" ] && continue
 #     ipmitool sensor thresh "$sensor" unc 65 ucr 75
 #     echo "  $sensor: unc=65 ucr=75"

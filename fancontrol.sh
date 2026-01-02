@@ -23,10 +23,6 @@ Modes:
   optimal  - Optimal mode (auto)
   heavyio  - Heavy IO mode
 
-Commands:
-  init               - Disable fan alarms (set thresholds to 0)
-  restore-thresholds - Restore default 420 RPM thresholds
-
 Examples:
   $0 0 50       # Zone 0 to 50%
   $0 1 40       # Zone 1 to 40%
@@ -71,14 +67,6 @@ set_mode() {
     esac
 }
 
-set_fan_thresholds() {
-    local thresh=$1
-    for fan in FAN1 FAN2 FAN3 FAN4 FANA FANB; do
-        ipmitool sensor thresh $fan lower 0 $thresh 0 >/dev/null 2>&1 || true
-    done
-    echo "Fan thresholds set to $thresh RPM"
-}
-
 set_zone_speed() {
     local zone=$1
     local percent=$2
@@ -117,16 +105,16 @@ set_zone() {
         sleep 0.5
         # Restore speeds for zones we're not changing
         if [ "$zone" = "0" ]; then
-            set_zone_speed 1 $z1_speed
+            set_zone_speed 1 "$z1_speed"
         elif [ "$zone" = "1" ]; then
-            set_zone_speed 0 $z0_speed
+            set_zone_speed 0 "$z0_speed"
         fi
     fi
     if [ "$zone" = "all" ]; then
-        set_zone_speed 0 $percent
-        set_zone_speed 1 $percent
+        set_zone_speed 0 "$percent"
+        set_zone_speed 1 "$percent"
     else
-        set_zone_speed $zone $percent
+        set_zone_speed "$zone" "$percent"
     fi
 }
 
@@ -139,14 +127,8 @@ case $1 in
     status)
         show_status
         ;;
-    init)
-        set_fan_thresholds 0
-        ;;
-    restore-thresholds)
-        set_fan_thresholds 420
-        ;;
     standard|full|optimal|heavyio)
-        set_mode $1
+        set_mode "$1"
         sleep 0.5
         show_status
         ;;
