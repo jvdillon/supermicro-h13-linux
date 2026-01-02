@@ -157,6 +157,11 @@ export _JAVA_OPTIONS="-Dsun.java2d.uiScale.enabled=true -Dsun.java2d.uiScale=2.0
 
 Should work on other H13-series boards with similar BMC firmware.
 
+## Acknowledgments
+
+IPMI raw commands derived from [smfc](https://github.com/petersulyok/smfc) by
+Peter Sulyok.
+
 ## License
 
 Apache 2.0
