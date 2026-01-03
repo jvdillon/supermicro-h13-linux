@@ -476,8 +476,12 @@ class FanSpeed:
         device_type: str,
         device_idx: int,
         zone: int,
-    ) -> tuple[MappingPoint, ...] | None:
-        """Look up mapping with precedence: deviceN-zoneM > deviceN-zone > device-zoneM > device-zone."""
+    ) -> tuple[tuple[MappingPoint, ...], MappingKey] | None:
+        """Look up mapping with precedence: deviceN-zoneM > deviceN-zone > device-zoneM > device-zone.
+
+        Returns (mapping, matched_key) or None. matched_key shows which key was used,
+        including whether zone was -1 (wildcard).
+        """
         for k in [
             (device_type, device_idx, zone),
             (device_type, device_idx, -1),
@@ -485,7 +489,9 @@ class FanSpeed:
             (device_type, -1, -1),
         ]:
             if k in self.config.speeds:
-                return self.config.speeds[k]
+                mapping = self.config.speeds[k]
+                if mapping is not None:
+                    return mapping, k
         return None
 
     def lookup(
@@ -630,7 +636,7 @@ class FanDaemon:
 
         zone_speeds = self._compute_zone_speeds(temps)
 
-        for zone, (speed, _trigger, _trigger_temp) in zone_speeds.items():
+        for zone, (speed, _trigger, _trigger_temp, _is_wild) in zone_speeds.items():
             if not self.hardware.set_zone_speed(zone, speed):
                 _ = self.hardware.set_fail_safe()
                 self.active_thresholds.clear()
@@ -638,7 +644,7 @@ class FanDaemon:
                 return
 
         # Check if any speeds changed
-        current_speeds = {z: spd for z, (spd, _, _) in zone_speeds.items()}
+        current_speeds = {z: spd for z, (spd, _, _, _) in zone_speeds.items()}
         speeds_changed = current_speeds != self.last_logged_speeds
 
         # Check if heartbeat is due (0 = disabled)
@@ -671,7 +677,7 @@ class FanDaemon:
 
     def _format_status(
         self,
-        zone_speeds: dict[int, tuple[int, str, int]],
+        zone_speeds: dict[int, tuple[int, str, int, bool]],
         temps: dict[str, tuple[int, ...] | None],
     ) -> str:
         """Format multiline status for logging."""
@@ -679,11 +685,16 @@ class FanDaemon:
         zones = sorted(self.hardware.get_zones())
 
         # First line: zone speeds
-        zone_parts = [f"z{z}={spd}%" for z, (spd, _, _) in sorted(zone_speeds.items())]
+        zone_parts = [
+            f"z{z}={spd}%" for z, (spd, _, _, _) in sorted(zone_speeds.items())
+        ]
         lines.append(" ".join(zone_parts))
 
-        # Find winners for each zone (e.g., {0: "RAM0", 1: "GPU0"})
-        winners: dict[int, str] = {z: trig for z, (_, trig, _) in zone_speeds.items()}
+        # Find winners for each zone (e.g., {0: ("RAM0", False), 1: ("GPU0", True)})
+        # is_wildcard indicates if the winning curve was zone-agnostic
+        winners: dict[int, tuple[str, bool]] = {
+            z: (trig, is_wild) for z, (_, trig, _, is_wild) in zone_speeds.items()
+        }
 
         # Collect all device names for alignment
         all_names: list[str] = []
@@ -691,10 +702,6 @@ class FanDaemon:
             for idx in range(len(values or ())):
                 all_names.append(f"{name}{idx}")
         max_name_len = max((len(n) for n in all_names), default=10)
-
-        # Compute max zone string length for alignment
-        # e.g., "z0:25%  z1:35%" - need to know width of each zone column
-        zone_col_width = 7  # "z0:100%" = 7 chars
 
         # Partition devices: those with curves first, then informational
         devices_with_curves: list[tuple[str, int, int]] = []
@@ -712,26 +719,53 @@ class FanDaemon:
             device_name = f"{name}{idx}"
             device_tag = f"{name.upper()}{idx}"
 
-            # Get zone speeds from curves
-            zone_strs: list[str] = []
+            # Get zone speeds from curves, tracking if wildcard
+            zone_results: list[
+                tuple[int, bool] | None
+            ] = []  # (speed, is_wildcard) per zone
             for zone in zones:
-                mapping = self.speed.get(name, idx, zone)
-                if mapping is not None:
+                result = self.speed.get(name, idx, zone)
+                if result is not None:
+                    mapping, matched_key = result
+                    is_wildcard = matched_key[2] == -1
                     active_thresh = self.active_thresholds.get((name, idx, zone))
                     spd, _ = self.speed.lookup(temp, mapping, active_thresh)
-                    zone_strs.append(f"z{zone}:{int(spd)}%")
+                    zone_results.append((int(spd), is_wildcard))
                 else:
-                    zone_strs.append("")  # No curve for this zone
+                    zone_results.append(None)
+
+            # Build zone string - use z* if all results are from same wildcard curve
+            if all(r is not None and r[1] for r in zone_results):
+                # All zones use wildcard curve with same speed
+                speeds = [r[0] for r in zone_results if r is not None]
+                if len(set(speeds)) == 1:
+                    zone_str = f"z*:{speeds[0]}%"
+                else:
+                    # Different speeds even with wildcard (shouldn't happen normally)
+                    zone_str = "  ".join(
+                        f"z{z}:{r[0]}%" if r else ""
+                        for z, r in zip(zones, zone_results)
+                    )
+            else:
+                # Mix of specific zones or no wildcard
+                parts: list[str] = []
+                for z, r in zip(zones, zone_results):
+                    if r is not None:
+                        parts.append(f"z{z}:{r[0]}%")
+                zone_str = "  ".join(parts)
 
             # Check if this device is a winner for any zone
-            winner_zones = [z for z, w in winners.items() if w == device_tag]
+            winner_zones = [z for z, (w, _) in winners.items() if w == device_tag]
             winner_marker = ""
             if winner_zones:
-                winner_marker = "  <-- " + ",".join(f"z{z}" for z in winner_zones)
+                # Check if all winning zones are from wildcard
+                all_wildcard = all(winners[z][1] for z in winner_zones)
+                if all_wildcard and len(winner_zones) == len(zones):
+                    winner_marker = "  <-- z*"
+                else:
+                    winner_marker = "  <-- " + ",".join(f"z{z}" for z in winner_zones)
 
             # Format the line with alignment
-            zone_str = "  ".join(f"{s:<{zone_col_width}}" for s in zone_strs)
-            zone_str = zone_str.rstrip()
             line = f"      {device_name:<{max_name_len}}  {temp:>3}C"
             if zone_str:
                 line += f"  {zone_str}"
@@ -743,17 +777,22 @@ class FanDaemon:
     def _compute_zone_speeds(
         self,
         temps: dict[str, tuple[int, ...] | None],
-    ) -> dict[int, tuple[int, str, int]]:
-        """Compute fan speed per zone. Returns {zone: (speed, trigger, temp)}."""
-        results: dict[int, tuple[int, str, int]] = {}
+    ) -> dict[int, tuple[int, str, int, bool]]:
+        """Compute fan speed per zone. Returns {zone: (speed, trigger, temp, is_wildcard)}."""
+        results: dict[int, tuple[int, str, int, bool]] = {}
         for zone in self.hardware.get_zones():
-            candidates: list[tuple[float, str, int, str, int, float]] = []
+            # (speed, trigger_name, temp, dev_name, dev_idx, new_thresh, is_wildcard)
+            candidates: list[tuple[float, str, int, str, int, float, bool]] = []
             for name, values in temps.items():
                 for idx, temp in enumerate(values or ()):
-                    if (m := self.speed.get(name, idx, zone)) is not None:
+                    if (result := self.speed.get(name, idx, zone)) is not None:
+                        mapping, matched_key = result
+                        is_wildcard = matched_key[2] == -1  # zone == -1 means wildcard
                         key = (name, idx, zone)
                         active_thresh = self.active_thresholds.get(key)
-                        spd, new_thresh = self.speed.lookup(temp, m, active_thresh)
+                        spd, new_thresh = self.speed.lookup(
+                            temp, mapping, active_thresh
+                        )
                         candidates.append(
                             (
                                 spd,
@@ -762,17 +801,18 @@ class FanDaemon:
                                 name,
                                 idx,
                                 new_thresh,
+                                is_wildcard,
                             )
                         )
             if candidates:
-                spd, trigger, temp, dev_name, dev_idx, new_thresh = max(
+                spd, trigger, temp, dev_name, dev_idx, new_thresh, is_wildcard = max(
                     candidates, key=lambda x: x[0]
                 )
                 self.active_thresholds[(dev_name, dev_idx, zone)] = new_thresh
-                results[zone] = (int(spd), trigger, temp)
+                results[zone] = (int(spd), trigger, temp, is_wildcard)
             else:
                 # No mappings for this zone - fail-safe to 100%
-                results[zone] = (100, "none", 0)
+                results[zone] = (100, "none", 0, False)
         return results
 
 

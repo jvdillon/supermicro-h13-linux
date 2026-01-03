@@ -138,19 +138,31 @@ class TestFanSpeedGet:
         m = FanSpeed.Config(
             speeds={("gpu", 0, 1): ((50.0, 20.0, None), (80.0, 100.0, None))}
         ).setup()
-        assert m.get("gpu", 0, 1) == ((50.0, 20.0, None), (80.0, 100.0, None))
+        result = m.get("gpu", 0, 1)
+        assert result is not None
+        mapping, key = result
+        assert mapping == ((50.0, 20.0, None), (80.0, 100.0, None))
+        assert key == ("gpu", 0, 1)
 
     def test_fallback_to_all_zones(self) -> None:
         m = FanSpeed.Config(
             speeds={("gpu", 0, -1): ((50.0, 20.0, None), (80.0, 100.0, None))}
         ).setup()
-        assert m.get("gpu", 0, 1) == ((50.0, 20.0, None), (80.0, 100.0, None))
+        result = m.get("gpu", 0, 1)
+        assert result is not None
+        mapping, key = result
+        assert mapping == ((50.0, 20.0, None), (80.0, 100.0, None))
+        assert key == ("gpu", 0, -1)  # matched wildcard zone
 
     def test_fallback_to_all_devices(self) -> None:
         m = FanSpeed.Config(
             speeds={("gpu", -1, 1): ((50.0, 20.0, None), (80.0, 100.0, None))}
         ).setup()
-        assert m.get("gpu", 0, 1) == ((50.0, 20.0, None), (80.0, 100.0, None))
+        result = m.get("gpu", 0, 1)
+        assert result is not None
+        mapping, key = result
+        assert mapping == ((50.0, 20.0, None), (80.0, 100.0, None))
+        assert key == ("gpu", -1, 1)  # matched wildcard device
 
     def test_default_gpu(self) -> None:
         m = FanSpeed.Config().setup()
@@ -335,7 +347,7 @@ class TestFanDaemon:
         temps = hardware.get_temps()
         assert temps is not None
         speeds = daemon._compute_zone_speeds(temps)
-        assert speeds[0] == (100, "none", 0)  # fail-safe when no mappings
+        assert speeds[0] == (100, "none", 0, False)  # fail-safe when no mappings
 
     def test_arbitrary_device_key_decoupled(self) -> None:
         """Prove hardware and mapping flags are decoupled.
@@ -761,7 +773,8 @@ class TestFanDaemonLifecycle:
         fan_speed = FanSpeed.Config().setup()
         daemon = FanDaemon.Config().setup(hardware, fan_speed)
 
-        zone_speeds = {0: (50, "GPU0", 70), 1: (30, "CPU0", 45)}
+        # (speed, trigger, temp, is_wildcard)
+        zone_speeds = {0: (50, "GPU0", 70, False), 1: (30, "CPU0", 45, False)}
         temps = {"cpu": (45,), "gpu": (70,), "ram": None}
 
         status = daemon._format_status(zone_speeds, temps)
