@@ -1,12 +1,13 @@
 """Unit tests for fan-daemon.py."""
 # pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
-# pyright: reportUnknownArgumentType=false
+# pyright: reportUnknownArgumentType=false, reportAny=false
 
 from __future__ import annotations
 
 import sys
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
+from typing import final
 from unittest.mock import patch
 
 import pytest
@@ -351,6 +352,7 @@ class TestFanDaemon:
         fan_speed = FanSpeed.Config(speeds={key: mapping}).setup()
 
         # Create mock hardware that returns the arbitrary key
+        @final
         class CustomHardware:
             zones = (0,)
 
