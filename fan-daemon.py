@@ -56,39 +56,45 @@ class Mappings:
         overrides: dict[MappingKey, DeviceCelsiusToFanZonePercent | None] | None = None,
     ):
         # (temp, speed, hysteresis) - hysteresis=0 means use global default
+        # Throttle temps: CPU 100°C, GPU 90°C, RAM 85°C, HDD 60°C, NVMe 85°C
         self.mappings = {
+            # CPU: AMD EPYC 9555 - throttle 100°C
             ("cpu", -1, 0): (
                 (40, 15, 0),
                 (60, 30, 0),
                 (75, 60, 0),
                 (85, 100, 0),
             ),
+            # GPU: NVIDIA RTX 5090 - throttle 90°C
             ("gpu", -1, 0): (
                 (40, 15, 0),
                 (50, 25, 0),
                 (60, 30, 0),
                 (70, 40, 0),
                 (80, 60, 0),
-                (87, 100, 0),  # 100% before 90°C throttle
+                (87, 100, 0),
             ),
             ("gpu", -1, 1): (
                 (40, 30, 0),
                 (50, 50, 0),
                 (60, 70, 0),
-                (70, 100, 0),  # zone1: 100% at GPU 70°C
+                (70, 100, 0),
             ),
+            # RAM: DDR5 SK Hynix - max 85°C
             ("ram", -1, 0): (
                 (40, 15, 0),
                 (60, 25, 0),
                 (70, 50, 0),
                 (80, 100, 0),
             ),
+            # HDD: Seagate Exos X18 - max 60°C
             ("hdd", -1, 0): (
                 (25, 15, 0),
                 (40, 25, 0),
                 (45, 50, 0),
                 (50, 100, 0),
             ),
+            # NVMe: WD Black SN8100 - max 85°C
             ("nvme", -1, 0): (
                 (35, 15, 0),
                 (50, 30, 0),
