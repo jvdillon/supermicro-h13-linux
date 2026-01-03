@@ -315,6 +315,8 @@ class FanSpeed:
     class Config:
         """Handles --mapping and --hysteresis flags."""
 
+        hysteresis_celsius: float = 5.0
+
         # (temp, speed, hysteresis) - hysteresis=None means use global default
         # Throttle temps: CPU 100°C, GPU 90°C, RAM 85°C, HDD 70°C, NVMe 85°C
         # Generally we set 100% at 85% of throttle.
@@ -370,7 +372,6 @@ class FanSpeed:
                 ),
             }
         )
-        hysteresis_celsius: float = 5.0
 
         def setup(self) -> FanSpeed:
             """Build FanSpeed from this config."""
@@ -380,16 +381,16 @@ class FanSpeed:
         def add_args(cls, argparser: argparse.ArgumentParser) -> None:
             """Add mapping arguments to parser."""
             _ = argparser.add_argument(
-                "--speeds",
-                action="append",
-                metavar="SPEC",
-                help="Mapping spec. Repeatable.",
-            )
-            _ = argparser.add_argument(
                 "--hysteresis_celsius",
                 type=float,
                 default=5.0,
                 help="Hysteresis (C) for falling temps.",
+            )
+            _ = argparser.add_argument(
+                "--speeds",
+                action="append",
+                metavar="SPEC",
+                help="Mapping spec. Repeatable.",
             )
 
         @classmethod
@@ -546,16 +547,17 @@ class FanDaemon:
         @classmethod
         def add_args(cls, argparser: argparse.ArgumentParser) -> None:
             """Add daemon configuration arguments to parser."""
+            del cls  # unused (slots=True prevents accessing defaults via cls)
             _ = argparser.add_argument(
                 "--interval_seconds",
                 type=float,
-                default=cls.interval_seconds,
+                default=5.0,
                 help="Poll interval (seconds).",
             )
             _ = argparser.add_argument(
                 "--heartbeat_seconds",
                 type=float,
-                default=cls.heartbeat_seconds,
+                default=0.0,
                 help="Heartbeat interval (seconds). 0=disabled.",
             )
 

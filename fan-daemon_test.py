@@ -663,3 +663,381 @@ temperature                             : 42 C
         with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
             result = hw._set_full_mode()
         assert result is False
+
+
+class TestConfigFromArgs:
+    """Tests for Config.from_args methods."""
+
+    def test_fan_speed_config_from_args(self) -> None:
+        import argparse
+
+        argparser = argparse.ArgumentParser()
+        FanSpeed.Config.add_args(argparser)
+        args = argparser.parse_args(
+            ["--speeds", "gpu=50:20,80:100", "--hysteresis_celsius", "3"]
+        )
+        config = FanSpeed.Config.from_args(argparser, args)
+        assert config.hysteresis_celsius == 3.0
+        assert ("gpu", -1, -1) in config.speeds
+
+    def test_fan_speed_config_from_args_no_speeds(self) -> None:
+        import argparse
+
+        argparser = argparse.ArgumentParser()
+        FanSpeed.Config.add_args(argparser)
+        args = argparser.parse_args([])
+        config = FanSpeed.Config.from_args(argparser, args)
+        assert config.hysteresis_celsius == 5.0  # default
+
+    def test_supermicro_h13_config_from_args(self) -> None:
+        import argparse
+
+        argparser = argparse.ArgumentParser()
+        SupermicroH13.Config.add_args(argparser)
+        args = argparser.parse_args([])
+        config = SupermicroH13.Config.from_args(argparser, args)
+        assert config.zones == (0, 1)
+
+    def test_fan_daemon_config_from_args(self) -> None:
+        import argparse
+
+        argparser = argparse.ArgumentParser()
+        FanDaemon.Config.add_args(argparser)
+        args = argparser.parse_args(
+            ["--interval_seconds", "10", "--heartbeat_seconds", "60"]
+        )
+        config = FanDaemon.Config.from_args(argparser, args)
+        assert config.interval_seconds == 10.0
+        assert config.heartbeat_seconds == 60.0
+
+    def test_fan_daemon_config_from_args_defaults(self) -> None:
+        import argparse
+
+        argparser = argparse.ArgumentParser()
+        FanDaemon.Config.add_args(argparser)
+        args = argparser.parse_args([])
+        config = FanDaemon.Config.from_args(argparser, args)
+        assert config.interval_seconds == 5.0
+        assert config.heartbeat_seconds == 0.0
+
+
+class TestUtilityFunctions:
+    """Tests for module-level utility functions."""
+
+    def test_run_cmd_success(self) -> None:
+        result = _run_cmd(["echo", "hello"])
+        assert result == "hello\n"
+
+    def test_run_cmd_failure(self) -> None:
+        result = _run_cmd(["false"])
+        assert result is None
+
+    def test_run_cmd_timeout(self) -> None:
+        result = _run_cmd(["sleep", "10"], timeout=0.1)
+        assert result is None
+
+    def test_run_cmd_not_found(self) -> None:
+        result = _run_cmd(["nonexistent_command_12345"])
+        assert result is None
+
+    def test_detect_hdds(self) -> None:
+        # Just verify it runs without error (actual detection depends on system)
+        _detect_hdds = _module._detect_hdds
+        result = _detect_hdds()
+        assert isinstance(result, tuple)
+
+    def test_detect_nvmes(self) -> None:
+        # Just verify it runs without error (actual detection depends on system)
+        _detect_nvmes = _module._detect_nvmes
+        result = _detect_nvmes()
+        assert isinstance(result, tuple)
+
+
+class TestFanDaemonLifecycle:
+    """Tests for FanDaemon run/shutdown lifecycle."""
+
+    def test_format_status(self) -> None:
+        hardware = MockHardware()
+        fan_speed = FanSpeed.Config().setup()
+        daemon = FanDaemon.Config().setup(hardware, fan_speed)
+
+        zone_speeds = {0: (50, "GPU0", 70), 1: (30, "CPU0", 45)}
+        temps = {"cpu": (45,), "gpu": (70,), "ram": None}
+
+        status = daemon._format_status(zone_speeds, temps)
+        assert "z0:GPU0=70C->50%" in status
+        assert "z1:CPU0=45C->30%" in status
+        assert "cpu=45" in status
+        assert "gpu=70" in status
+
+    def test_heartbeat_logging(self) -> None:
+        hardware = MockHardware()
+        fan_speed = FanSpeed.Config().setup()
+        config = FanDaemon.Config(heartbeat_seconds=0.01)
+        daemon = config.setup(hardware, fan_speed)
+
+        # First call logs and sets heartbeat
+        daemon.control_loop()
+        first_heartbeat = daemon.last_heartbeat
+
+        # Second call with same speeds - no log (speeds unchanged, heartbeat not due)
+        daemon.control_loop()
+
+        # Wait for heartbeat interval
+        import time
+
+        time.sleep(0.02)
+
+        # Third call should trigger heartbeat log
+        daemon.control_loop()
+        assert daemon.last_heartbeat > first_heartbeat
+
+    def test_shutdown(self) -> None:
+        hardware = MockHardware()
+        fan_speed = FanSpeed.Config().setup()
+        daemon = FanDaemon.Config().setup(hardware, fan_speed)
+
+        with pytest.raises(SystemExit):
+            daemon.shutdown(signum=15)
+        assert hardware.fail_safe_called
+
+
+class TestEdgeCases:
+    """Edge case tests for better coverage."""
+
+    def test_parse_speeds_empty_part(self) -> None:
+        # Test with empty part between commas
+        _, mapping = FanSpeed.Config._parse_speeds("x=40:15,,80:100")
+        assert mapping == ((40.0, 15.0, None), (80.0, 100.0, None))
+
+    def test_ipmi_sensor_non_numeric(self) -> None:
+        """Test that non-numeric sensor values are handled."""
+        with patch.object(_module, "_detect_hdds", return_value=()):
+            with patch.object(_module, "_detect_nvmes", return_value=()):
+                hw = SupermicroH13.Config().setup()
+
+        # Include a sensor with "na" value
+        ipmi_out = """CPU Temp         | 45.000     | degrees C  | ok
+DIMMA~F Temp     | na         | degrees C  | na
+GPU1 Temp        | 65.000     | degrees C  | ok
+"""
+        nvidia_out = "65\n"
+
+        def mock_run_cmd(cmd: list[str], _timeout: float = 5.0) -> str | None:
+            if "ipmitool" in cmd and "sensor" in cmd:
+                return ipmi_out
+            if "nvidia-smi" in cmd:
+                return nvidia_out
+            return None
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            temps = hw.get_temps()
+        assert temps is not None
+        assert temps["cpu"] == (45,)
+        assert temps["ram"] is None  # na was skipped
+
+    def test_hdd_smartctl_failure(self) -> None:
+        """Test HDD temp reading when smartctl fails."""
+        with patch.object(_module, "_detect_hdds", return_value=("/dev/sda",)):
+            with patch.object(_module, "_detect_nvmes", return_value=()):
+                hw = SupermicroH13.Config().setup()
+
+        ipmi_out = """CPU Temp         | 45.000     | degrees C  | ok
+GPU1 Temp        | 65.000     | degrees C  | ok
+"""
+        nvidia_out = "65\n"
+
+        def mock_run_cmd(cmd: list[str], _timeout: float = 5.0) -> str | None:
+            if "ipmitool" in cmd and "sensor" in cmd:
+                return ipmi_out
+            if "nvidia-smi" in cmd:
+                return nvidia_out
+            if "smartctl" in cmd:
+                return None  # smartctl fails
+            return None
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            temps = hw.get_temps()
+        assert temps is not None
+        assert temps["hdd"] is None
+
+    def test_nvme_smart_log_failure(self) -> None:
+        """Test NVMe temp reading when nvme smart-log fails."""
+        with patch.object(_module, "_detect_hdds", return_value=()):
+            with patch.object(_module, "_detect_nvmes", return_value=("/dev/nvme0n1",)):
+                hw = SupermicroH13.Config().setup()
+
+        ipmi_out = """CPU Temp         | 45.000     | degrees C  | ok
+GPU1 Temp        | 65.000     | degrees C  | ok
+"""
+        nvidia_out = "65\n"
+
+        def mock_run_cmd(cmd: list[str], _timeout: float = 5.0) -> str | None:
+            if "ipmitool" in cmd and "sensor" in cmd:
+                return ipmi_out
+            if "nvidia-smi" in cmd:
+                return nvidia_out
+            if "nvme" in cmd:
+                return None  # nvme fails
+            return None
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            temps = hw.get_temps()
+        assert temps is not None
+        assert temps["nvme"] is None
+
+    def test_hdd_temp_invalid_line_format(self) -> None:
+        """Test HDD temp parsing with too few parts."""
+        with patch.object(_module, "_detect_hdds", return_value=("/dev/sda",)):
+            with patch.object(_module, "_detect_nvmes", return_value=()):
+                hw = SupermicroH13.Config().setup()
+
+        ipmi_out = """CPU Temp         | 45.000     | degrees C  | ok
+GPU1 Temp        | 65.000     | degrees C  | ok
+"""
+        nvidia_out = "65\n"
+        smartctl_out = """194 Temperature_Celsius short"""  # Too few parts
+
+        def mock_run_cmd(cmd: list[str], _timeout: float = 5.0) -> str | None:
+            if "ipmitool" in cmd and "sensor" in cmd:
+                return ipmi_out
+            if "nvidia-smi" in cmd:
+                return nvidia_out
+            if "smartctl" in cmd:
+                return smartctl_out
+            return None
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            temps = hw.get_temps()
+        assert temps is not None
+        assert temps["hdd"] is None
+
+    def test_hdd_temp_non_numeric_value(self) -> None:
+        """Test HDD temp parsing with non-numeric raw value."""
+        with patch.object(_module, "_detect_hdds", return_value=("/dev/sda",)):
+            with patch.object(_module, "_detect_nvmes", return_value=()):
+                hw = SupermicroH13.Config().setup()
+
+        ipmi_out = """CPU Temp         | 45.000     | degrees C  | ok
+GPU1 Temp        | 65.000     | degrees C  | ok
+"""
+        nvidia_out = "65\n"
+        smartctl_out = """ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
+194 Temperature_Celsius     0x0022   100   100   000    Old_age   Always       -       na
+"""
+
+        def mock_run_cmd(cmd: list[str], _timeout: float = 5.0) -> str | None:
+            if "ipmitool" in cmd and "sensor" in cmd:
+                return ipmi_out
+            if "nvidia-smi" in cmd:
+                return nvidia_out
+            if "smartctl" in cmd:
+                return smartctl_out
+            return None
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            temps = hw.get_temps()
+        assert temps is not None
+        assert temps["hdd"] is None
+
+    def test_nvme_temp_invalid_format(self) -> None:
+        """Test NVMe temp parsing with invalid format."""
+        with patch.object(_module, "_detect_hdds", return_value=()):
+            with patch.object(_module, "_detect_nvmes", return_value=("/dev/nvme0n1",)):
+                hw = SupermicroH13.Config().setup()
+
+        ipmi_out = """CPU Temp         | 45.000     | degrees C  | ok
+GPU1 Temp        | 65.000     | degrees C  | ok
+"""
+        nvidia_out = "65\n"
+        nvme_out = """temperature                             : invalid
+"""
+
+        def mock_run_cmd(cmd: list[str], _timeout: float = 5.0) -> str | None:
+            if "ipmitool" in cmd and "sensor" in cmd:
+                return ipmi_out
+            if "nvidia-smi" in cmd:
+                return nvidia_out
+            if "nvme" in cmd:
+                return nvme_out
+            return None
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            temps = hw.get_temps()
+        assert temps is not None
+        assert temps["nvme"] is None
+
+    def test_nvme_temp_no_colon(self) -> None:
+        """Test NVMe temp parsing with line missing colon."""
+        with patch.object(_module, "_detect_hdds", return_value=()):
+            with patch.object(_module, "_detect_nvmes", return_value=("/dev/nvme0n1",)):
+                hw = SupermicroH13.Config().setup()
+
+        ipmi_out = """CPU Temp         | 45.000     | degrees C  | ok
+GPU1 Temp        | 65.000     | degrees C  | ok
+"""
+        nvidia_out = "65\n"
+        nvme_out = """temperature no colon here
+"""
+
+        def mock_run_cmd(cmd: list[str], _timeout: float = 5.0) -> str | None:
+            if "ipmitool" in cmd and "sensor" in cmd:
+                return ipmi_out
+            if "nvidia-smi" in cmd:
+                return nvidia_out
+            if "nvme" in cmd:
+                return nvme_out
+            return None
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            temps = hw.get_temps()
+        assert temps is not None
+        assert temps["nvme"] is None
+
+    def test_ipmi_sensor_short_line(self) -> None:
+        """Test IPMI sensor parsing with line that has too few parts."""
+        with patch.object(_module, "_detect_hdds", return_value=()):
+            with patch.object(_module, "_detect_nvmes", return_value=()):
+                hw = SupermicroH13.Config().setup()
+
+        ipmi_out = """CPU Temp         | 45.000     | degrees C  | ok
+Short line
+GPU1 Temp        | 65.000     | degrees C  | ok
+"""
+        nvidia_out = "65\n"
+
+        def mock_run_cmd(cmd: list[str], _timeout: float = 5.0) -> str | None:
+            if "ipmitool" in cmd and "sensor" in cmd:
+                return ipmi_out
+            if "nvidia-smi" in cmd:
+                return nvidia_out
+            return None
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            temps = hw.get_temps()
+        assert temps is not None
+        assert temps["cpu"] == (45,)
+
+    def test_ipmi_sensor_unknown_name(self) -> None:
+        """Test IPMI sensor parsing skips unknown sensors."""
+        with patch.object(_module, "_detect_hdds", return_value=()):
+            with patch.object(_module, "_detect_nvmes", return_value=()):
+                hw = SupermicroH13.Config().setup()
+
+        ipmi_out = """CPU Temp         | 45.000     | degrees C  | ok
+Unknown Sensor   | 99.000     | degrees C  | ok
+GPU1 Temp        | 65.000     | degrees C  | ok
+"""
+        nvidia_out = "65\n"
+
+        def mock_run_cmd(cmd: list[str], _timeout: float = 5.0) -> str | None:
+            if "ipmitool" in cmd and "sensor" in cmd:
+                return ipmi_out
+            if "nvidia-smi" in cmd:
+                return nvidia_out
+            return None
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            temps = hw.get_temps()
+        assert temps is not None
+        # Unknown sensor should be ignored

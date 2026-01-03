@@ -85,8 +85,8 @@ set_zone_speed() {
 
 show_status() {
     echo "Mode: $(get_mode)"
-    echo "Zone 0 (FAN1-4): $(get_zone_speed 0)%"
-    echo "Zone 1 (FANA-B): $(get_zone_speed 1)%"
+    echo "Zone 0 (FAN:1,2,3,4): $(get_zone_speed 0)%"
+    echo "Zone 1 (FAN:A,B): $(get_zone_speed 1)%"
 }
 
 set_zone() {
