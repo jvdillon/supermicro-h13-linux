@@ -371,10 +371,10 @@ class FanSpeed:
                 # Zone 1 (GPU fans): more aggressive, hits 100% at 70°C
                 ("gpu", -1, 1): (
                     (0, 15, None),
-                    (40, 35, None),
-                    (50, 50, None),
-                    (60, 85, None),
-                    (70, 100, None),
+                    (30, 35, None),
+                    (40, 50, None),
+                    (50, 80, None),
+                    (60, 100, None),
                 ),
             }
         )
