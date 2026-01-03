@@ -659,7 +659,10 @@ class FanDaemon:
             self.last_logged_speeds = current_speeds
             self.last_heartbeat = now
         elif heartbeat_due:
-            log.info("(heartbeat) %s", status)
+            # Append (heartbeat) to first line
+            lines = status.split("\n", 1)
+            lines[0] += " (heartbeat)"
+            log.info("\n".join(lines))
             self.last_heartbeat = now
         else:
             log.debug(status)
