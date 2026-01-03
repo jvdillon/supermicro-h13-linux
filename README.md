@@ -3,32 +3,108 @@
 Fan control and IPMI configuration for Supermicro H13-series motherboards
 (H13SSL-N, H13SSW, etc.) running Linux.
 
+## Contents
+
+- `fan-daemon.py` - Automatic temperature-based fan control daemon
+- `fan-control.sh` - Manual fan speed control
+- `setup-fan-daemon.sh` - Install/uninstall the daemon as a systemd service
+- `setup-ipmi-access.sh` - Configure unprivileged IPMI access
+- `setup-ipmi-limits.sh` - Disable low-RPM alarms and set sensor thresholds
+- `lshw.sh` - Hardware inventory script
+
 ## Quick Start
 
 ```bash
 git clone https://github.com/jvdillon/supermicro-h13-linux.git
 cd supermicro-h13-linux
 
-# Setup unprivileged IPMI access
+# Setup unprivileged IPMI access (log out/in after)
 sudo ./setup-ipmi-access.sh
 
-# Log out and back in, then control fans
-./fan-control.sh status
-./fan-control.sh 0 40    # Zone 0 to 40%
-./fan-control.sh optimal # Return to auto
+# Disable low-RPM fan alarms
+sudo ./setup-ipmi-limits.sh
+
+# Install the automatic fan control daemon
+sudo ./setup-fan-daemon.sh install
+
+# Monitor the daemon
+journalctl -u fan-daemon -f
 ```
 
-## Fan Control
+## Fan Daemon
 
-The `fan-control.sh` script provides manual fan speed control via IPMI raw
-commands.
+The `fan-daemon.py` script provides automatic temperature-based fan control.
+It reads temperatures from CPU, GPU, RAM, HDD, and NVMe devices and adjusts
+fan speeds using piecewise-constant curves with hysteresis.
+
+### Features
+
+- Per-device-type temperature mappings (CPU, GPU, RAM, HDD, NVMe)
+- Two-zone control (zone 0: FAN1-4, zone 1: FANA-B)
+- Hysteresis to prevent oscillation at threshold boundaries
+- Fail-safe: any error sets fans to 100%
+- GPU temps via nvidia-smi with IPMI fallback
+
+### Installation
+
+```bash
+sudo ./setup-fan-daemon.sh install    # Install and start
+sudo ./setup-fan-daemon.sh uninstall  # Stop and remove
+sudo ./setup-fan-daemon.sh status     # Show status and logs
+```
+
+### Configuration
+
+View options:
+
+```bash
+./fan-daemon.py --help
+```
+
+Override temperature mappings via command line:
+
+```bash
+# Format: DEVICE[N]-zone[M]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
+--mapping gpu-zone=50:20,70:50,85:100      # All GPUs, all zones
+--mapping gpu0-zone1=60:30,80:100          # GPU 0, zone 1 only
+--mapping hdd-zone=                         # Disable HDD control
+```
+
+To modify the installed service:
+
+```bash
+sudo systemctl edit fan-daemon --full
+```
+
+### Dependencies
+
+```bash
+sudo apt install ipmitool nvme-cli
+# nvidia driver required for GPU temp monitoring
+```
+
+### Monitoring
+
+```bash
+journalctl -u fan-daemon -f
+```
+
+Output shows zone speeds and which device triggered the speed:
+
+```
+INFO: z0:GPU0=72C->40% z1:GPU0=72C->100% [cpu=45 gpu=72/70 ram=38 hdd=32 nvme=42]
+```
+
+## Manual Fan Control
+
+The `fan-control.sh` script provides manual fan speed control via IPMI.
 
 ### Fan Zones
 
-| Zone | Fans    | Typical Use                     |
+| Zone | Headers | Typical Use                     |
 |------|---------|---------------------------------|
 | 0    | FAN1-4  | CPU cooler, case intake/exhaust |
-| 1    | FANA-B  | Auxiliary (peripheral cooling)  |
+| 1    | FANA-B  | Auxiliary (GPU/peripheral)      |
 
 ### Usage
 
@@ -46,71 +122,48 @@ commands.
 ./fan-control.sh standard  # Standard
 ./fan-control.sh heavyio   # Heavy IO
 ./fan-control.sh full      # Full speed
-
-# Disable low-RPM alarms (run once after fresh BMC reset)
-./fan-control.sh init
 ```
 
-### Notes
-
-- Minimum speed is 15% (fans won't go lower)
-- Setting a manual percentage switches to "full" mode first, then applies the
-  duty cycle
+Notes:
+- Minimum speed is 15%
+- Manual percentages require "full" mode (set automatically)
 - Use `optimal` to return to automatic BMC control
-- Fan thresholds default to 420 RPM; `init` sets them to 0 to silence alarms
-  when running quiet
 
 ## IPMI Access Setup
 
-By default, `/dev/ipmi*` devices require root. The `setup-ipmi-access.sh`
-script configures unprivileged access:
+By default, /dev/ipmi* devices require root. Run once:
 
 ```bash
 sudo ./setup-ipmi-access.sh
 # Log out and back in
 ```
 
-What it does:
-- Installs `ipmitool` if not present
-- Creates `ipmi` group and adds current user
-- Loads `ipmi_devintf` and `ipmi_si` kernel modules
-- Persists modules in `/etc/modules`
-- Creates udev rule for `/dev/ipmi*` group permissions
+This creates an `ipmi` group, loads kernel modules, and sets udev rules.
 
 To add other users:
+
 ```bash
 sudo usermod -aG ipmi USERNAME
 ```
 
-## Hardware Reference
+## Sensor Thresholds
 
-Tested configuration:
+Factory fan thresholds trigger alarms at 420 RPM. For quiet operation:
 
-| Component    | Model                                      |
-|--------------|--------------------------------------------|
-| Motherboard  | Supermicro H13SSL-N (AMD EPYC SP5)        |
-| Case         | Phanteks Enthoo Pro 2 Server Edition      |
-| CPU Cooler   | Arctic Freezer 4U-SP5                     |
-| Case Fans    | Arctic P14 Pro PST (140mm)                |
-| Aux Fans     | Arctic P12 Slim PWM PST (120mm, for GPU)  |
-
-### Fan Wiring
-
+```bash
+sudo ./setup-ipmi-limits.sh
 ```
-Zone 0 (FAN1-4):
-  FAN1 - CPU cooler
-  FAN2 - Case intake
-  FAN3 - Case intake
-  FAN4 - Exhaust
 
-Zone 1 (FANA-B):
-  FANA - GPU cooling
-  FANB - (unused)
+This disables low-RPM alarms. Run once after BMC reset.
+
+## Hardware Inventory
+
+```bash
+./lshw.sh              # Full hardware details
+./lshw.sh --noserial   # Hide serial numbers (for sharing)
 ```
 
 ## IPMI Raw Commands Reference
-
-For those wanting to understand or modify the fan control:
 
 ```bash
 # Get current mode (00=standard, 01=full, 02=optimal, 04=heavyio)
@@ -129,38 +182,25 @@ ipmitool raw 0x30 0x70 0x66 0x00 0x01  # Zone 1
 # Set zone duty cycle (0x00-0x64 = 0-100%)
 ipmitool raw 0x30 0x70 0x66 0x01 0x00 0x32  # Zone 0 to 50%
 ipmitool raw 0x30 0x70 0x66 0x01 0x01 0x28  # Zone 1 to 40%
-
-# Set fan threshold (silence low-RPM alarms)
-ipmitool sensor thresh FAN1 lower 0 0 0
 ```
 
-## IPMIView (Optional)
+## Tested Configuration
 
-Supermicro's Java-based IPMI management tool:
-
-```bash
-# Download from Supermicro support site
-wget https://www.supermicro.com/.../IPMIView_*_bundleJRE_Linux_x64.tar.gz
-
-tar xzf IPMIView_*_bundleJRE_Linux_x64.tar.gz
-cd IPMIView_*
-
-# Fix HiDPI scaling
-export _JAVA_OPTIONS="-Dsun.java2d.uiScale.enabled=true -Dsun.java2d.uiScale=2.0"
-./IPMIView20
-```
-
-## Tested On
-
-- Supermicro H13SSL-N with AMD EPYC 9555 (Genoa/Turin)
-- Ubuntu 24.04
+| Component   | Model                              |
+|-------------|------------------------------------|
+| Motherboard | Supermicro H13SSL-N                |
+| CPU         | AMD EPYC 9555 (Turin/Zen 5)        |
+| RAM         | 4x32GB DDR5-5600 ECC (SK Hynix)    |
+| GPU         | 2x NVIDIA GeForce RTX 5090         |
+| NVMe        | WD Black SN8100 4TB                |
+| HDD         | Seagate Exos X18 12TB              |
+| OS          | Ubuntu 24.04                       |
 
 Should work on other H13-series boards with similar BMC firmware.
 
 ## Acknowledgments
 
-IPMI raw commands derived from [smfc](https://github.com/petersulyok/smfc) by
-Peter Sulyok.
+IPMI raw commands derived from [smfc](https://github.com/petersulyok/smfc).
 
 ## License
 

@@ -33,10 +33,6 @@ import sys
 import time
 from typing import Protocol, cast
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(levelname)s: %(message)s",
-)
 log = logging.getLogger("fan-daemon")
 
 # (threshold_temp, fan_speed_percent, hysteresis_celsius)
@@ -294,6 +290,8 @@ class Config:
     temp_min_valid_celsius: float = 0.0
     temp_max_valid_celsius: float = 120.0
     cmd_timeout_seconds: float = 5.0
+    log_level: str = "INFO"
+    heartbeat_seconds: float = 300.0  # Log status every 5 minutes even if unchanged
 
     @classmethod
     def from_args(cls) -> Config:
@@ -372,6 +370,19 @@ Mapping format: DEVICE[N]-zone[M]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
             default="",
             help="Comma-separated NVMe paths.",
         )
+        _ = p.add_argument(
+            "--log-level",
+            type=str,
+            choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+            default="INFO",
+            help="Log level.",
+        )
+        _ = p.add_argument(
+            "--heartbeat",
+            type=float,
+            default=300.0,
+            help="Heartbeat log interval (seconds).",
+        )
         args = p.parse_args()
         min_speed = cast(int, args.min_speed)
         max_speed = cast(int, args.max_speed)
@@ -396,6 +407,8 @@ Mapping format: DEVICE[N]-zone[M]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
         hysteresis = cast(float, args.hysteresis)
         interval = cast(float, args.interval)
         gpu_slots = cast(int, args.gpu_slots)
+        log_level = cast(str, args.log_level)
+        heartbeat = cast(float, args.heartbeat)
         zones = {
             z: ZoneConfig(
                 min_speed_percent=min_speed,
@@ -412,6 +425,8 @@ Mapping format: DEVICE[N]-zone[M]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
             gpu_slots=gpu_slots,
             hdd_devices=hdd,
             nvme_devices=nvme,
+            log_level=log_level,
+            heartbeat_seconds=heartbeat,
         )
 
 
@@ -678,12 +693,17 @@ class FanDaemon:
     running: bool
     # Maps (device_type, device_idx, zone) -> active threshold temperature
     active_thresholds: dict[tuple[str, int, int], float]
+    # Track last logged speeds for change detection
+    last_logged_speeds: dict[int, int]
+    last_heartbeat: float
 
     def __init__(self, config: Config, hardware: Hardware) -> None:
         self.config = config
         self.hardware = hardware
         self.running = False
         self.active_thresholds = {}
+        self.last_logged_speeds = {}
+        self.last_heartbeat = 0.0
 
     @staticmethod
     def _quantize_speed(speed: float, step: int) -> int:
@@ -763,6 +783,25 @@ class FanDaemon:
                 results[zone] = (zc.min_speed_percent, "none", 0.0)
         return results
 
+    def _format_status(
+        self,
+        zone_speeds: dict[int, tuple[int, str, float]],
+        temps: Temps,
+    ) -> str:
+        """Format status line for logging."""
+        parts = [
+            f"z{z}:{trig}={temp:.0f}C->{spd}%"
+            for z, (spd, trig, temp) in zone_speeds.items()
+        ]
+        return "%s [cpu=%s gpu=%s ram=%s hdd=%s nvme=%s]" % (
+            " ".join(parts),
+            "/".join(f"{t:.0f}" for t in temps.cpus_celsius) or "-",
+            "/".join(f"{t:.0f}" for t in temps.gpus_celsius) or "-",
+            "/".join(f"{t:.0f}" for t in temps.rams_celsius) or "-",
+            "/".join(f"{t:.0f}" for t in temps.hdds_celsius) or "-",
+            "/".join(f"{t:.0f}" for t in temps.nvmes_celsius) or "-",
+        )
+
     def control_loop(self) -> None:
         """Main control loop iteration."""
         temps = self.get_all_temps()
@@ -770,29 +809,37 @@ class FanDaemon:
             log.error("Failed to read temps, going to full speed")
             _ = self.hardware.set_full_speed()
             self.active_thresholds.clear()
+            self.last_logged_speeds.clear()
             return
 
         zone_speeds = self.compute_zone_speeds(temps)
-        changed_zones: list[str] = []
 
-        for zone, (speed, trigger, trigger_temp) in zone_speeds.items():
+        for zone, (speed, _trigger, _trigger_temp) in zone_speeds.items():
             if not self.hardware.set_zone_speed(zone, speed):
                 _ = self.hardware.set_full_speed()
                 self.active_thresholds.clear()
+                self.last_logged_speeds.clear()
                 return
 
-            changed_zones.append(f"z{zone}:{trigger}={trigger_temp:.0f}C->{speed}%")
+        # Check if any speeds changed
+        current_speeds = {z: spd for z, (spd, _, _) in zone_speeds.items()}
+        speeds_changed = current_speeds != self.last_logged_speeds
 
-        if changed_zones:
-            log.info(
-                "%s [cpu=%s gpu=%s ram=%s hdd=%s nvme=%s]",
-                " ".join(changed_zones),
-                "/".join(f"{t:.0f}" for t in temps.cpus_celsius) or "-",
-                "/".join(f"{t:.0f}" for t in temps.gpus_celsius) or "-",
-                "/".join(f"{t:.0f}" for t in temps.rams_celsius) or "-",
-                "/".join(f"{t:.0f}" for t in temps.hdds_celsius) or "-",
-                "/".join(f"{t:.0f}" for t in temps.nvmes_celsius) or "-",
-            )
+        # Check if heartbeat is due
+        now = time.time()
+        heartbeat_due = (now - self.last_heartbeat) >= self.config.heartbeat_seconds
+
+        status = self._format_status(zone_speeds, temps)
+
+        if speeds_changed:
+            log.info(status)
+            self.last_logged_speeds = current_speeds
+            self.last_heartbeat = now
+        elif heartbeat_due:
+            log.info("(heartbeat) %s", status)
+            self.last_heartbeat = now
+        else:
+            log.debug(status)
 
     def shutdown(
         self,
@@ -835,6 +882,8 @@ class FanDaemon:
 
 def main() -> None:
     config = Config.from_args()
+    level = cast(int, getattr(logging, config.log_level))
+    logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
     daemon = FanDaemon(config, Supermicro(config))
     daemon.run()
 
