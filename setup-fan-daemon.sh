@@ -14,7 +14,7 @@
 #     sudo systemctl edit fan-daemon --full
 #
 #   Then modify ExecStart, e.g.:
-#     ExecStart=/usr/bin/python3 /usr/local/bin/fan-daemon.py --gpu-target 70
+#     ExecStart=/usr/bin/python3 /usr/local/bin/fan-daemon.py --interval_seconds 10
 
 set -e
 
@@ -54,10 +54,10 @@ After=network.target
 Type=simple
 
 # Add flags here. Run "fan-daemon.py --help" for options. Examples:
-#   --interval 10              Poll every 10 seconds (default: 5)
-#   --hysteresis 3             3°C hysteresis (default: 5)
-#   --log-level DEBUG          Verbose logging
-#   --mapping gpu-zone1=50:30,70:100   Custom GPU curve for zone 1
+#   --interval_seconds 10              Poll every 10 seconds (default: 5)
+#   --hysteresis_celsius 3             3°C hysteresis (default: 5)
+#   --log-level DEBUG                  Verbose logging
+#   --speeds gpu-zone1=50:30,70:100    Custom GPU curve for zone 1
 ExecStart=/usr/bin/python3 /usr/local/bin/fan-daemon.py
 
 Restart=on-failure

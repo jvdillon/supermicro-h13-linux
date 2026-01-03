@@ -65,9 +65,9 @@ Override temperature mappings via command line:
 
 ```bash
 # Format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
---mapping gpu=50:20,70:50,85:100           # All GPUs, all zones
---mapping gpu0-zone1=60:30,80:100          # GPU 0, zone 1 only
---mapping hdd=                              # Disable HDD control
+--speeds gpu=50:20,70:50,85:100           # All GPUs, all zones
+--speeds gpu0-zone1=60:30,80:100          # GPU 0, zone 1 only
+--speeds hdd=                              # Disable HDD control
 ```
 
 To modify the installed service:

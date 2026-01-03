@@ -229,7 +229,6 @@ class SupermicroH13:
 
     def _valid_temp(self, value: float) -> int | None:
         """Return value as int if in valid range (0-120C), else None."""
-        del self  # unused
         if 0 <= value <= 120:
             return int(value)
         return None
@@ -748,15 +747,15 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Mapping format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
-  HYST is optional per-point hysteresis (default: --hysteresis value).
+  HYST is optional per-point hysteresis (default: --hysteresis_celsius value).
   Hysteresis prevents oscillation: fans stay high until temp drops HYST below threshold.
 
   Examples:
-    --mapping gpu=50:15,85:100            All GPUs, all zones
-    --mapping gpu-zone0=50:15,85:100      All GPUs, zone 0 only
-    --mapping gpu0-zone1=60:20,85:100     GPU #0, zone 1 only
-    --mapping gpu=50:15:3,70:50:5         Custom hysteresis per point
-    --mapping hdd=                        Disable HDD mappings
+    --speeds gpu=50:15,85:100            All GPUs, all zones
+    --speeds gpu-zone0=50:15,85:100      All GPUs, zone 0 only
+    --speeds gpu0-zone1=60:20,85:100     GPU #0, zone 1 only
+    --speeds gpu=50:15:3,70:50:5         Custom hysteresis per point
+    --speeds hdd=                        Disable HDD mappings
 
   Precedence (most specific wins):
     gpu0-zone0 > gpu0-zone > gpu-zone0 > gpu > default
@@ -782,9 +781,10 @@ Mapping format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
         datefmt="%y-%m-%d %H:%M:%S",
     )
 
-    fan_speed = FanSpeed.Config.from_args(argparser, args).setup()
-    hardware = SupermicroH13.Config.from_args(argparser, args).setup()
-    daemon = FanDaemon.Config.from_args(argparser, args).setup(hardware, fan_speed)
+    daemon = FanDaemon.Config.from_args(argparser, args).setup(
+        hardware=SupermicroH13.Config.from_args(argparser, args).setup(),
+        speed=FanSpeed.Config.from_args(argparser, args).setup(),
+    )
     daemon.run()
 
 
