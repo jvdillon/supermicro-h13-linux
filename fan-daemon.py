@@ -12,6 +12,12 @@ Run with --help for configuration options.
 
 Monitor logs:
     journalctl -u fan-daemon -f
+
+Dependencies:
+    sudo apt install ipmitool nvme-cli nvidia-open
+    # ipmitool     - IPMI fan control and CPU/RAM temp monitoring
+    # nvme-cli     - NVMe temperature monitoring (optional)
+    # nvidia-open  - GPU temperature monitoring via nvidia-smi (optional)
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Protocol
+from typing import Protocol, cast
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,14 +66,15 @@ class Mappings:
             ),
             ("gpu", -1, 0): (
                 (50, 15, 0),
-                (70, 20, 0),
-                (80, 50, 0),
+                (70, 40, 0),  # zone0: 40% at GPU 70°C
+                (80, 60, 0),
                 (85, 100, 0),
             ),
             ("gpu", -1, 1): (
-                (50, 15, 0),
-                (60, 50, 0),  # zone1: 50% at GPU 60°C
-                (80, 75, 0),
+                (50, 25, 0),
+                (60, 50, 0),
+                (70, 65, 0),
+                (80, 85, 0),
                 (85, 100, 0),
             ),
             ("ram", -1, 0): (
@@ -93,7 +100,10 @@ class Mappings:
             self.mappings.update(overrides)
 
     def get(
-        self, device_type: str, device_idx: int, zone: int
+        self,
+        device_type: str,
+        device_idx: int,
+        zone: int,
     ) -> DeviceCelsiusToFanZonePercent | None:
         """Look up mapping with precedence: deviceN-zoneM > deviceN-zone > device-zoneM > device-zone."""
         for k in [
@@ -263,7 +273,10 @@ class Config:
 
     mappings: Mappings = dataclasses.field(default_factory=Mappings)
     zones: dict[int, ZoneConfig] = dataclasses.field(
-        default_factory=lambda: {0: ZoneConfig(), 1: ZoneConfig()}
+        default_factory=lambda: {
+            0: ZoneConfig(),
+            1: ZoneConfig(),
+        }
     )
     hysteresis_celsius: float = 5.0
     interval_seconds: float = 5.0
@@ -352,30 +365,30 @@ Mapping format: DEVICE[N]-zone[M]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
             default="",
             help="Comma-separated NVMe paths.",
         )
-        ns = vars(p.parse_args())
-        min_speed = int(ns["min_speed"])  # pyright: ignore[reportAny]
-        max_speed = int(ns["max_speed"])  # pyright: ignore[reportAny]
+        args = p.parse_args()
+        min_speed = cast(int, args.min_speed)
+        max_speed = cast(int, args.max_speed)
         if min_speed >= max_speed:
             p.error("--min-speed must be less than --max-speed")
         user_mappings: dict[MappingKey, DeviceCelsiusToFanZonePercent | None] = {}
-        for spec in ns.get("mapping") or []:  # pyright: ignore[reportUnknownVariableType]
+        for spec in cast(list[str], args.mapping or []):
             try:
-                key, mapping = Mappings.parse_spec(str(spec))  # pyright: ignore[reportUnknownArgumentType]
+                key, mapping = Mappings.parse_spec(spec)
                 user_mappings[key] = mapping
             except ValueError as e:
                 p.error(str(e))
-        hdd_str = str(ns["hdd_devices"])  # pyright: ignore[reportAny]
-        nvme_str = str(ns["nvme_devices"])  # pyright: ignore[reportAny]
+        hdd_str = cast(str, args.hdd_devices)
+        nvme_str = cast(str, args.nvme_devices)
         hdd: tuple[str, ...] | None = None  # auto-detect
         nvme: tuple[str, ...] | None = None  # auto-detect
         if hdd_str:
             hdd = tuple(x.strip() for x in hdd_str.split(",") if x.strip())
         if nvme_str:
             nvme = tuple(x.strip() for x in nvme_str.split(",") if x.strip())
-        speed_step = int(ns["speed_step"])  # pyright: ignore[reportAny]
-        hysteresis = float(ns["hysteresis"])  # pyright: ignore[reportAny]
-        interval = float(ns["interval"])  # pyright: ignore[reportAny]
-        gpu_slots = int(ns["gpu_slots"])  # pyright: ignore[reportAny]
+        speed_step = cast(int, args.speed_step)
+        hysteresis = cast(float, args.hysteresis)
+        interval = cast(float, args.interval)
+        gpu_slots = cast(int, args.gpu_slots)
         zones = {
             z: ZoneConfig(
                 min_speed_percent=min_speed,
