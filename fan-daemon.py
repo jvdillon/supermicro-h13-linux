@@ -636,7 +636,7 @@ class FanDaemon:
 
         zone_speeds = self._compute_zone_speeds(temps)
 
-        for zone, (speed, _trigger, _trigger_temp, _is_wild) in zone_speeds.items():
+        for zone, (speed, _trigger, _trigger_temp) in zone_speeds.items():
             if not self.hardware.set_zone_speed(zone, speed):
                 _ = self.hardware.set_fail_safe()
                 self.active_thresholds.clear()
@@ -644,7 +644,7 @@ class FanDaemon:
                 return
 
         # Check if any speeds changed
-        current_speeds = {z: spd for z, (spd, _, _, _) in zone_speeds.items()}
+        current_speeds = {z: spd for z, (spd, _, _) in zone_speeds.items()}
         speeds_changed = current_speeds != self.last_logged_speeds
 
         # Check if heartbeat is due (0 = disabled)
@@ -677,7 +677,7 @@ class FanDaemon:
 
     def _format_status(
         self,
-        zone_speeds: dict[int, tuple[int, str, int, bool]],
+        zone_speeds: dict[int, tuple[int, str, int]],
         temps: dict[str, tuple[int, ...] | None],
     ) -> str:
         """Format multiline status for logging."""
@@ -685,15 +685,11 @@ class FanDaemon:
         zones = sorted(self.hardware.get_zones())
 
         # First line: zone speeds
-        zone_parts = [
-            f"z{z}={spd}%" for z, (spd, _, _, _) in sorted(zone_speeds.items())
-        ]
+        zone_parts = [f"z{z}={spd}%" for z, (spd, _, _) in sorted(zone_speeds.items())]
         lines.append(" ".join(zone_parts))
 
         # Find winners for each zone (e.g., {0: "RAM0", 1: "GPU0"})
-        winners: dict[int, str] = {
-            z: trig for z, (_, trig, _, _) in zone_speeds.items()
-        }
+        winners: dict[int, str] = {z: trig for z, (_, trig, _) in zone_speeds.items()}
 
         # Collect all device names for alignment
         all_names: list[str] = []
@@ -771,42 +767,33 @@ class FanDaemon:
     def _compute_zone_speeds(
         self,
         temps: dict[str, tuple[int, ...] | None],
-    ) -> dict[int, tuple[int, str, int, bool]]:
-        """Compute fan speed per zone. Returns {zone: (speed, trigger, temp, is_wildcard)}."""
-        results: dict[int, tuple[int, str, int, bool]] = {}
+    ) -> dict[int, tuple[int, str, int]]:
+        """Compute fan speed per zone. Returns {zone: (speed, trigger, temp)}."""
+        results: dict[int, tuple[int, str, int]] = {}
         for zone in self.hardware.get_zones():
-            # (speed, trigger_name, temp, dev_name, dev_idx, new_thresh, is_wildcard)
-            candidates: list[tuple[float, str, int, str, int, float, bool]] = []
+            # (speed, trigger_name, temp, dev_name, dev_idx, new_thresh)
+            candidates: list[tuple[float, str, int, str, int, float]] = []
             for name, values in temps.items():
                 for idx, temp in enumerate(values or ()):
                     if (result := self.speed.get(name, idx, zone)) is not None:
-                        mapping, matched_key = result
-                        is_wildcard = matched_key[2] == -1  # zone == -1 means wildcard
+                        mapping, _ = result
                         key = (name, idx, zone)
                         active_thresh = self.active_thresholds.get(key)
                         spd, new_thresh = self.speed.lookup(
                             temp, mapping, active_thresh
                         )
                         candidates.append(
-                            (
-                                spd,
-                                "%s%d" % (name.upper(), idx),
-                                temp,
-                                name,
-                                idx,
-                                new_thresh,
-                                is_wildcard,
-                            )
+                            (spd, f"{name.upper()}{idx}", temp, name, idx, new_thresh)
                         )
             if candidates:
-                spd, trigger, temp, dev_name, dev_idx, new_thresh, is_wildcard = max(
+                spd, trigger, temp, dev_name, dev_idx, new_thresh = max(
                     candidates, key=lambda x: x[0]
                 )
                 self.active_thresholds[(dev_name, dev_idx, zone)] = new_thresh
-                results[zone] = (int(spd), trigger, temp, is_wildcard)
+                results[zone] = (int(spd), trigger, temp)
             else:
                 # No mappings for this zone - fail-safe to 100%
-                results[zone] = (100, "none", 0, False)
+                results[zone] = (100, "none", 0)
         return results
 
 

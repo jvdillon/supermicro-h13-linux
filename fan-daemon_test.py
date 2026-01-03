@@ -347,7 +347,7 @@ class TestFanDaemon:
         temps = hardware.get_temps()
         assert temps is not None
         speeds = daemon._compute_zone_speeds(temps)
-        assert speeds[0] == (100, "none", 0, False)  # fail-safe when no mappings
+        assert speeds[0] == (100, "none", 0)  # fail-safe when no mappings
 
     def test_arbitrary_device_key_decoupled(self) -> None:
         """Prove hardware and mapping flags are decoupled.
@@ -773,8 +773,8 @@ class TestFanDaemonLifecycle:
         fan_speed = FanSpeed.Config().setup()
         daemon = FanDaemon.Config().setup(hardware, fan_speed)
 
-        # (speed, trigger, temp, is_wildcard)
-        zone_speeds = {0: (50, "GPU0", 70, False), 1: (30, "CPU0", 45, False)}
+        # (speed, trigger, temp)
+        zone_speeds = {0: (50, "GPU0", 70), 1: (30, "CPU0", 45)}
         temps = {"cpu": (45,), "gpu": (70,), "ram": None}
 
         status = daemon._format_status(zone_speeds, temps)
