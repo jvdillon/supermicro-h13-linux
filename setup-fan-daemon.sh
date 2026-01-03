@@ -39,7 +39,8 @@ do_install() {
     check_root
     echo "Installing fan-daemon..."
 
-    # Copy daemon script
+    # Copy daemon script (remove first in case of symlink)
+    rm -f "$DAEMON_INSTALL_PATH"
     cp "$SCRIPT_DIR/fan-daemon.py" "$DAEMON_INSTALL_PATH"
     chmod +x "$DAEMON_INSTALL_PATH"
     echo "  Installed $DAEMON_INSTALL_PATH"

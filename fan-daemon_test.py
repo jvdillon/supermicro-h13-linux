@@ -802,6 +802,114 @@ class TestFanDaemonLifecycle:
         assert hardware.fail_safe_called
 
 
+class TestFromArgsErrors:
+    """Tests for from_args error paths."""
+
+    def test_fan_speed_config_from_args_invalid_speeds(self) -> None:
+        """Test from_args with invalid speeds spec triggers argparser.error."""
+        import argparse
+
+        argparser = argparse.ArgumentParser()
+        FanSpeed.Config.add_args(argparser)
+        # Use invalid spec that will cause _parse_speeds to raise ValueError
+        args = argparser.parse_args(["--speeds", "invalid"])
+
+        with pytest.raises(SystemExit):  # argparser.error() calls sys.exit
+            FanSpeed.Config.from_args(argparser, args)
+
+    def test_fan_daemon_config_from_args_interval_zero(self) -> None:
+        """Test from_args with interval_seconds <= 0 triggers argparser.error."""
+        import argparse
+
+        argparser = argparse.ArgumentParser()
+        FanDaemon.Config.add_args(argparser)
+        args = argparser.parse_args(["--interval_seconds", "0"])
+
+        with pytest.raises(SystemExit):  # argparser.error() calls sys.exit
+            FanDaemon.Config.from_args(argparser, args)
+
+    def test_fan_daemon_config_from_args_interval_negative(self) -> None:
+        """Test from_args with negative interval_seconds triggers argparser.error."""
+        import argparse
+
+        argparser = argparse.ArgumentParser()
+        FanDaemon.Config.add_args(argparser)
+        args = argparser.parse_args(["--interval_seconds", "-5"])
+
+        with pytest.raises(SystemExit):  # argparser.error() calls sys.exit
+            FanDaemon.Config.from_args(argparser, args)
+
+
+class TestFanDaemonRun:
+    """Tests for FanDaemon.run() method."""
+
+    def test_run_calls_initialize(self) -> None:
+        """Test that run() calls hardware.initialize()."""
+        hardware = MockHardware()
+        initialized = []
+
+        def mock_initialize() -> bool:
+            initialized.append(True)
+            return True
+
+        hardware.initialize = mock_initialize  # type: ignore[method-assign]
+
+        fan_speed = FanSpeed.Config().setup()
+        daemon = FanDaemon.Config().setup(hardware, fan_speed)
+
+        # Stop after one loop iteration
+        def stop_after_one_iteration(_seconds: float) -> None:
+            daemon.running = False
+
+        with patch.object(_module, "time") as mock_time:
+            mock_time.sleep.side_effect = stop_after_one_iteration
+            mock_time.time.return_value = 0.0
+            daemon.run()
+
+        assert len(initialized) == 1
+
+    def test_run_control_loop_exception_sets_fail_safe(self) -> None:
+        """Test that exceptions in control_loop trigger fail-safe."""
+        hardware = MockHardware()
+        fan_speed = FanSpeed.Config().setup()
+        daemon = FanDaemon.Config().setup(hardware, fan_speed)
+
+        call_count = 0
+
+        def mock_control_loop() -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("Test error")
+            daemon.running = False
+
+        daemon.control_loop = mock_control_loop  # type: ignore[method-assign]
+
+        with patch.object(_module, "time") as mock_time:
+            mock_time.sleep.return_value = None
+            mock_time.time.return_value = 0.0
+            daemon.run()
+
+        assert hardware.fail_safe_called
+
+    def test_run_sets_fail_safe_on_exit(self) -> None:
+        """Test that run() sets fail-safe when exiting normally."""
+        hardware = MockHardware()
+        fan_speed = FanSpeed.Config().setup()
+        daemon = FanDaemon.Config().setup(hardware, fan_speed)
+
+        # Stop immediately
+        def stop_immediately(_seconds: float) -> None:
+            daemon.running = False
+
+        with patch.object(_module, "time") as mock_time:
+            mock_time.sleep.side_effect = stop_immediately
+            mock_time.time.return_value = 0.0
+            daemon.run()
+
+        assert hardware.fail_safe_called
+
+
 class TestEdgeCases:
     """Edge case tests for better coverage."""
 
