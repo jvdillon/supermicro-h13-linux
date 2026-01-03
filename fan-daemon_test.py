@@ -308,23 +308,29 @@ class TestFanDaemon:
         hardware.gpu_temps = None
         assert daemon.get_all_temps() is None
 
-    def test_get_all_temps_ram_failure(
+    def test_get_all_temps_ram_optional(
         self, daemon: FanDaemon, hardware: MockHardware
     ) -> None:
         hardware.ram_temps = None
-        assert daemon.get_all_temps() is None
+        temps = daemon.get_all_temps()
+        assert temps is not None
+        assert temps.rams_celsius == []
 
-    def test_get_all_temps_hdd_failure(
+    def test_get_all_temps_hdd_optional(
         self, daemon: FanDaemon, hardware: MockHardware
     ) -> None:
         hardware.hdd_temps = None
-        assert daemon.get_all_temps() is None
+        temps = daemon.get_all_temps()
+        assert temps is not None
+        assert temps.hdds_celsius == []
 
-    def test_get_all_temps_nvme_failure(
+    def test_get_all_temps_nvme_optional(
         self, daemon: FanDaemon, hardware: MockHardware
     ) -> None:
         hardware.nvme_temps = None
-        assert daemon.get_all_temps() is None
+        temps = daemon.get_all_temps()
+        assert temps is not None
+        assert temps.nvmes_celsius == []
 
     def test_quantize_speed(self, daemon: FanDaemon) -> None:
         assert daemon._quantize_speed(15, 10) == 20  # round(1.5) = 2 (banker's)

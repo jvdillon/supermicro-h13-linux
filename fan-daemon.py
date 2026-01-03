@@ -2,7 +2,7 @@
 """
 Fan daemon for server motherboards using piecewise-constant temperature mappings.
 
-Each device type (CPU, GPU, HDD, NVMe) has its own temp→speed mapping.
+Each device type (CPU, GPU, RAM, HDD, NVMe) has its own temp->speed mapping.
 Fan speed = max(mapping(device_temp) for all devices).
 Logs which device triggered the speed change.
 
@@ -386,8 +386,14 @@ Mapping format: DEVICE[N]-zone[M]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
         args = p.parse_args()
         min_speed = cast(int, args.min_speed)
         max_speed = cast(int, args.max_speed)
+        interval = cast(float, args.interval)
+        heartbeat = cast(float, args.heartbeat)
         if min_speed >= max_speed:
             p.error("--min-speed must be less than --max-speed")
+        if interval <= 0:
+            p.error("--interval must be > 0")
+        if heartbeat <= 0:
+            p.error("--heartbeat must be > 0")
         user_mappings: dict[MappingKey, DeviceCelsiusToFanZonePercent | None] = {}
         for spec in cast(list[str], args.mapping or []):
             try:
@@ -405,10 +411,8 @@ Mapping format: DEVICE[N]-zone[M]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
             nvme = tuple(x.strip() for x in nvme_str.split(",") if x.strip())
         speed_step = cast(int, args.speed_step)
         hysteresis = cast(float, args.hysteresis)
-        interval = cast(float, args.interval)
         gpu_slots = cast(int, args.gpu_slots)
         log_level = cast(str, args.log_level)
-        heartbeat = cast(float, args.heartbeat)
         zones = {
             z: ZoneConfig(
                 min_speed_percent=min_speed,
@@ -603,7 +607,8 @@ class Supermicro:
 
     def set_full_speed(self) -> bool:
         """Set all zones to 100%."""
-        return all(self.set_zone_speed(z, 100) for z in self.config.zones)
+        results = [self.set_zone_speed(z, 100) for z in self.config.zones]
+        return all(results)
 
     def detect_gpus(self) -> int:
         """Detect GPU count."""
@@ -711,24 +716,20 @@ class FanDaemon:
         return int(round(speed / step) * step)
 
     def get_all_temps(self) -> Temps | None:
-        """Get all temperatures. Returns None on failure."""
+        """Get all temperatures. Returns None if CPU or GPU fails."""
         cpus = self.hardware.get_cpu_temps()
         if cpus is None:
             return None
         gpus = self.hardware.get_gpu_temps()
         if gpus is None:
             return None
-        rams = self.hardware.get_ram_temps()
-        hdds = self.hardware.get_hdd_temps()
-        nvmes = self.hardware.get_nvme_temps()
-        if rams is None or hdds is None or nvmes is None:
-            return None
+        # RAM/HDD/NVMe are optional - empty list is fine
         return Temps(
             cpus_celsius=cpus,
             gpus_celsius=gpus,
-            rams_celsius=rams,
-            hdds_celsius=hdds,
-            nvmes_celsius=nvmes,
+            rams_celsius=self.hardware.get_ram_temps() or [],
+            hdds_celsius=self.hardware.get_hdd_temps() or [],
+            nvmes_celsius=self.hardware.get_nvme_temps() or [],
         )
 
     def compute_zone_speeds(
