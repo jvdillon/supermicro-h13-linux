@@ -35,8 +35,7 @@ from typing import Protocol, cast
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    format="%(levelname)s: %(message)s",
 )
 log = logging.getLogger("fan-daemon")
 
@@ -65,17 +64,19 @@ class Mappings:
                 (85, 100, 0),
             ),
             ("gpu", -1, 0): (
-                (50, 15, 0),
+                (40, 15, 0),
+                (50, 30, 0),
+                (60, 30, 0),
                 (70, 40, 0),  # zone0: 40% at GPU 70°C
                 (80, 60, 0),
-                (85, 100, 0),
+                (85, 80, 0),
+                (88, 100, 0),
             ),
             ("gpu", -1, 1): (
                 (50, 25, 0),
                 (60, 50, 0),
                 (70, 65, 0),
-                (80, 85, 0),
-                (85, 100, 0),
+                (80, 100, 0),
             ),
             ("ram", -1, 0): (
                 (40, 15, 0),
