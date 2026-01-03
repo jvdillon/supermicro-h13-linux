@@ -55,7 +55,7 @@ Type=simple
 
 # Add flags here. Run "fan-daemon.py --help" for options. Examples:
 #   --interval 10              Poll every 10 seconds (default: 5)
-#   --hysteresis 3             3C hysteresis (default: 5)
+#   --hysteresis 3             3°C hysteresis (default: 5)
 #   --log-level DEBUG          Verbose logging
 #   --mapping gpu-zone1=50:30,70:100   Custom GPU curve for zone 1
 ExecStart=/usr/bin/python3 /usr/local/bin/fan-daemon.py

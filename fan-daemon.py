@@ -52,7 +52,7 @@ class Mappings:
         overrides: dict[MappingKey, DeviceCelsiusToFanZonePercent | None] | None = None,
     ):
         # (temp, speed, hysteresis) - hysteresis=0 means use global default
-        # Throttle temps: CPU 100°C, GPU 90°C, RAM 85°C, HDD 60°C, NVMe 85°C
+        # Throttle temps: CPU 100°C, GPU 90°C, RAM 85°C, HDD 70°C, NVMe 85°C
         # Generally we set 100% at 85% of throttle.
         self.mappings = {
             # CPU: AMD EPYC 9555 - throttle 100°C
@@ -84,12 +84,12 @@ class Mappings:
                 (70, 50, 0),
                 (80, 100, 0),
             ),
-            # HDD: Seagate Exos X18 - max 60°C
+            # HDD: Seagate IronWolf Pro - max 70°C
             ("hdd", -1, 0): (
-                (25, 15, 0),
-                (40, 25, 0),
-                (45, 50, 0),
-                (50, 100, 0),
+                (30, 15, 0),
+                (45, 25, 0),
+                (55, 50, 0),
+                (60, 100, 0),
             ),
             # NVMe: WD Black SN8100 - max 85°C
             ("nvme", -1, 0): (
@@ -344,7 +344,7 @@ Mapping format: DEVICE[N]-zone[M]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
             "--hysteresis",
             type=float,
             default=5.0,
-            help="Default hysteresis (C) for falling temps.",
+            help="Default hysteresis (°C) for falling temps.",
         )
         _ = p.add_argument(
             "--interval",

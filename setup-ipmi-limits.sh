@@ -36,9 +36,9 @@ set -e
 #   https://documents.sandisk.com/content/dam/asset-library/en_us/assets/public/sandisk/product/internal-drives/wd-black-ssd/data-sheet-wd-black-sn8100-nvme-ssd.pdf
 #
 # SATA:
-#   Seagate Exos X18 12TB (ST12000NT001)
-#   https://www.seagate.com/products/enterprise-drives/exos-x/x18/
-#   https://www.seagate.com/content/dam/seagate/migrated-assets/www-content/datasheets/pdfs/exos-x18-channel-DS2045-4-2106US-en_US.pdf
+#   Seagate IronWolf Pro 12TB (ST12000NT001)
+#   https://www.seagate.com/products/nas-drives/ironwolf-hard-drive/
+#   https://www.seagate.com/www-content/datasheets/pdfs/ironwolf-pro-20tb-DS1914-18-2111US-en_US.pdf
 #
 # FAN1: CPU cooler
 #   ARCTIC Freezer 4U-SP5
@@ -90,9 +90,9 @@ done
 #
 # GPU Temperature Thresholds
 # NVIDIA RTX 5090 thermal limits:
-#   Throttle begins: 90C (up from 83C on RTX 40-series)
-#   Hardware shutdown: ~92C
-# IPMI reads GPU temp via SMBus external thermal diode (may differ ~3C from nvidia-smi)
+#   Throttle begins: 90°C (up from 83°C on RTX 40-series)
+#   Hardware shutdown: ~92°C
+# IPMI reads GPU temp via SMBus external thermal diode (may differ ~3°C from nvidia-smi)
 #
 # Default values:
 #   unc (upper non-critical): na (not set)
@@ -140,7 +140,7 @@ done
 # =============================================================================
 # Memory Temperature Thresholds (commented out - using factory defaults)
 # =============================================================================
-# DDR5 is rated up to 85C. Factory default ucr=85 is appropriate.
+# DDR5 is rated up to 85°C. Factory default ucr=85 is appropriate.
 #
 # Factory defaults:
 #   DIMMA~F Temp:   ucr=85, unr=na (DDR5 DIMMs, slots A-F)

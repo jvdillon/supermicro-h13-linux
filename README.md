@@ -193,7 +193,7 @@ ipmitool raw 0x30 0x70 0x66 0x01 0x01 0x28  # Zone 1 to 40%
 | RAM         | 4x32GB DDR5-5600 ECC (SK Hynix)    |
 | GPU         | 2x NVIDIA GeForce RTX 5090         |
 | NVMe        | WD Black SN8100 4TB                |
-| HDD         | Seagate Exos X18 12TB              |
+| HDD         | Seagate IronWolf Pro 12TB          |
 | OS          | Ubuntu 24.04                       |
 
 Should work on other H13-series boards with similar BMC firmware.
