@@ -48,9 +48,10 @@ fan speeds using piecewise-constant curves with hysteresis.
 ### Installation
 
 ```bash
-sudo ./setup-fan-daemon.sh install    # Install and start
-sudo ./setup-fan-daemon.sh uninstall  # Stop and remove
-sudo ./setup-fan-daemon.sh status     # Show status and logs
+sudo ./setup-fan-daemon.sh install      # Install and start (copies daemon)
+sudo ./setup-fan-daemon.sh install-dev  # Install with symlink (for development)
+sudo ./setup-fan-daemon.sh uninstall    # Stop and remove
+sudo ./setup-fan-daemon.sh status       # Show status and logs
 ```
 
 ### Configuration
@@ -89,10 +90,19 @@ sudo apt install ipmitool smartmontools nvme-cli
 journalctl -u fan-daemon -f
 ```
 
-Output shows zone speeds and which device triggered the speed:
+Output shows zone speeds, per-device temps, and which device triggered each zone:
 
 ```
-INFO: z0:GPU0=72C->40% z1:GPU0=72C->100% [cpu=45 gpu=72/70 ram=38 hdd=32 nvme=42]
+INFO: z0=40% z1=100%
+      cpu0         45C  z0:15%
+      ram0         38C  z0:15%
+      ram1         35C  z0:15%
+      nvme0        42C  z0:15%
+      hdd0         32C  z0:15%
+      gpu0         72C  z0:40%  z1:100%  <-- z0,z1
+      gpu1         70C  z0:40%  z1:100%
+      gpu_ipmi0    73C
+      vrm_cpu0     42C
 ```
 
 ## Manual Fan Control

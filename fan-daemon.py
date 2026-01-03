@@ -865,9 +865,18 @@ Mapping format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
         format="%(levelname)s: %(message)s",
     )
 
-    daemon = FanDaemon.Config.from_args(argparser, args).setup(
-        hardware=SupermicroH13.Config.from_args(argparser, args).setup(),
-        speed=FanSpeed.Config.from_args(argparser, args).setup(),
+    daemon = FanDaemon.Config.from_args(
+        argparser,
+        args,
+    ).setup(
+        hardware=SupermicroH13.Config.from_args(
+            argparser,
+            args,
+        ).setup(),
+        speed=FanSpeed.Config.from_args(
+            argparser,
+            args,
+        ).setup(),
     )
     daemon.run()
 
