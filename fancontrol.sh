@@ -1,8 +1,8 @@
 #!/bin/bash
 # Supermicro H13 fan control via IPMI
-# Usage: ./fancontrol.sh <zone> <percent>
-#        ./fancontrol.sh <mode>
-#        ./fancontrol.sh status
+# Usage: ./fan-control.sh <zone> <percent>
+#        ./fan-control.sh <mode>
+#        ./fan-control.sh status
 
 set -e
 

@@ -121,7 +121,7 @@ do_uninstall() {
 
     echo ""
     echo "Done. Fans set to full speed."
-    echo "Use './fancontrol.sh optimal' to return to auto control."
+    echo "Use './fan-control.sh optimal' to return to auto control."
 }
 
 do_status() {
@@ -140,7 +140,7 @@ do_status() {
 
     echo ""
     echo "=== Fan Status ==="
-    "$SCRIPT_DIR/fancontrol.sh" status 2>/dev/null || true
+    "$SCRIPT_DIR/fan-control.sh" status 2>/dev/null || true
 
     echo ""
     echo "=== Recent Logs ==="
