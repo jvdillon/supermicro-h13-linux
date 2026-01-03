@@ -313,7 +313,7 @@ class FanSpeed:
 
     @dataclasses.dataclass(slots=True, kw_only=True)
     class Config:
-        """Handles --mapping and --hysteresis flags."""
+        """Handles --speeds and --hysteresis_celsius flags."""
 
         hysteresis_celsius: float = 5.0
 
@@ -333,7 +333,8 @@ class FanSpeed:
                 # GPU: NVIDIA RTX 5090 - throttle 90°C (85%: 77°C)
                 # Zone 0 (case fans): steady ramp, hits 100% at 85°C
                 ("gpu", -1, 0): (
-                    (36, 20, None),
+                    (0, 15, None),
+                    (40, 20, None),
                     (50, 25, None),
                     (55, 30, None),
                     (60, 35, None),
@@ -344,13 +345,15 @@ class FanSpeed:
                 ),
                 # Zone 1 (GPU fans): more aggressive, hits 100% at 70°C
                 ("gpu", -1, 1): (
-                    (35, 35, None),
+                    (0, 15, None),
+                    (40, 35, None),
                     (50, 50, None),
                     (60, 85, None),
                     (70, 100, None),
                 ),
                 # RAM: DDR5 SK Hynix - max 85°C (85%: 72°C)
                 ("ram", -1, 0): (
+                    (0, 15, None),
                     (50, 25, None),
                     (60, 40, None),
                     (68, 70, None),
@@ -358,6 +361,7 @@ class FanSpeed:
                 ),
                 # HDD: Seagate IronWolf Pro - max 70°C (85%: 60°C)
                 ("hdd", -1, 0): (
+                    (0, 15, None),
                     (42, 25, None),
                     (48, 40, None),
                     (54, 70, None),
@@ -365,6 +369,7 @@ class FanSpeed:
                 ),
                 # NVMe: WD Black SN8100 - max 85°C (85%: 72°C)
                 ("nvme", -1, 0): (
+                    (0, 15, None),
                     (50, 25, None),
                     (58, 40, None),
                     (65, 70, None),
