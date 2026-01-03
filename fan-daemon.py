@@ -330,6 +330,30 @@ class FanSpeed:
                     (80, 70, None),
                     (85, 100, None),
                 ),
+                # RAM: DDR5 SK Hynix - max 85°C (85%: 72°C)
+                ("ram", -1, 0): (
+                    (0, 15, None),
+                    (50, 25, None),
+                    (60, 40, None),
+                    (68, 70, None),
+                    (72, 100, None),
+                ),
+                # NVMe: WD Black SN8100 - max 85°C (85%: 72°C)
+                ("nvme", -1, 0): (
+                    (0, 15, None),
+                    (50, 25, None),
+                    (58, 40, None),
+                    (65, 70, None),
+                    (72, 100, None),
+                ),
+                # HDD: Seagate IronWolf Pro - max 70°C (85%: 60°C)
+                ("hdd", -1, 0): (
+                    (0, 15, None),
+                    (42, 25, None),
+                    (48, 40, None),
+                    (54, 70, None),
+                    (60, 100, None),
+                ),
                 # GPU: NVIDIA RTX 5090 - throttle 90°C (85%: 77°C)
                 # Zone 0 (case fans): steady ramp, hits 100% at 85°C
                 ("gpu", -1, 0): (
@@ -350,30 +374,6 @@ class FanSpeed:
                     (50, 50, None),
                     (60, 85, None),
                     (70, 100, None),
-                ),
-                # RAM: DDR5 SK Hynix - max 85°C (85%: 72°C)
-                ("ram", -1, 0): (
-                    (0, 15, None),
-                    (50, 25, None),
-                    (60, 40, None),
-                    (68, 70, None),
-                    (72, 100, None),
-                ),
-                # HDD: Seagate IronWolf Pro - max 70°C (85%: 60°C)
-                ("hdd", -1, 0): (
-                    (0, 15, None),
-                    (42, 25, None),
-                    (48, 40, None),
-                    (54, 70, None),
-                    (60, 100, None),
-                ),
-                # NVMe: WD Black SN8100 - max 85°C (85%: 72°C)
-                ("nvme", -1, 0): (
-                    (0, 15, None),
-                    (50, 25, None),
-                    (58, 40, None),
-                    (65, 70, None),
-                    (72, 100, None),
                 ),
             }
         )
