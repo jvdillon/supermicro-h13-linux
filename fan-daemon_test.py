@@ -78,11 +78,15 @@ class MockHardware:
 class TestMappingsParse:
     def test_basic(self) -> None:
         mapping = Mappings.parse("40:15,60:30,80:100")
-        assert mapping == ((40.0, 15.0), (60.0, 30.0), (80.0, 100.0))
+        assert mapping == ((40.0, 15.0, 0.0), (60.0, 30.0, 0.0), (80.0, 100.0, 0.0))
 
     def test_sorts_by_temp(self) -> None:
         mapping = Mappings.parse("80:100,40:15,60:30")
-        assert mapping == ((40.0, 15.0), (60.0, 30.0), (80.0, 100.0))
+        assert mapping == ((40.0, 15.0, 0.0), (60.0, 30.0, 0.0), (80.0, 100.0, 0.0))
+
+    def test_with_hysteresis(self) -> None:
+        mapping = Mappings.parse("40:15:3,80:100:5")
+        assert mapping == ((40.0, 15.0, 3.0), (80.0, 100.0, 5.0))
 
     def test_empty_returns_none(self) -> None:
         assert Mappings.parse("") is None
@@ -100,7 +104,7 @@ class TestMappingsParseSpec:
     def test_gpu_zone(self) -> None:
         key, mapping = Mappings.parse_spec("gpu-zone=40:15,80:100")
         assert key == ("gpu", -1, -1)
-        assert mapping == ((40.0, 15.0), (80.0, 100.0))
+        assert mapping == ((40.0, 15.0, 0.0), (80.0, 100.0, 0.0))
 
     def test_gpu_zone0(self) -> None:
         key, _ = Mappings.parse_spec("gpu-zone0=40:15,80:100")
@@ -118,16 +122,16 @@ class TestMappingsParseSpec:
 
 class TestMappingsGet:
     def test_exact_match(self) -> None:
-        m = Mappings({("gpu", 0, 1): ((50.0, 20.0), (80.0, 100.0))})
-        assert m.get("gpu", 0, 1) == ((50.0, 20.0), (80.0, 100.0))
+        m = Mappings({("gpu", 0, 1): ((50.0, 20.0, 0.0), (80.0, 100.0, 0.0))})
+        assert m.get("gpu", 0, 1) == ((50.0, 20.0, 0.0), (80.0, 100.0, 0.0))
 
     def test_fallback_to_all_zones(self) -> None:
-        m = Mappings({("gpu", 0, -1): ((50.0, 20.0), (80.0, 100.0))})
-        assert m.get("gpu", 0, 1) == ((50.0, 20.0), (80.0, 100.0))
+        m = Mappings({("gpu", 0, -1): ((50.0, 20.0, 0.0), (80.0, 100.0, 0.0))})
+        assert m.get("gpu", 0, 1) == ((50.0, 20.0, 0.0), (80.0, 100.0, 0.0))
 
     def test_fallback_to_all_devices(self) -> None:
-        m = Mappings({("gpu", -1, 1): ((50.0, 20.0), (80.0, 100.0))})
-        assert m.get("gpu", 0, 1) == ((50.0, 20.0), (80.0, 100.0))
+        m = Mappings({("gpu", -1, 1): ((50.0, 20.0, 0.0), (80.0, 100.0, 0.0))})
+        assert m.get("gpu", 0, 1) == ((50.0, 20.0, 0.0), (80.0, 100.0, 0.0))
 
     def test_default_gpu(self) -> None:
         m = Mappings()
@@ -142,18 +146,43 @@ class TestMappingsGet:
 
 class TestMappingsLookup:
     def test_below_min(self) -> None:
-        mapping = ((40.0, 15.0), (80.0, 100.0))
-        assert Mappings.lookup(30, mapping) == 15.0
+        mapping = ((40.0, 15.0, 0.0), (80.0, 100.0, 0.0))
+        speed, thresh = Mappings.lookup(30, mapping)
+        assert speed == 15.0
+        assert thresh == 40.0  # returns first threshold
 
     def test_above_max(self) -> None:
-        mapping = ((40.0, 15.0), (80.0, 100.0))
-        assert Mappings.lookup(90, mapping) == 100.0
+        mapping = ((40.0, 15.0, 0.0), (80.0, 100.0, 0.0))
+        speed, thresh = Mappings.lookup(90, mapping)
+        assert speed == 100.0
+        assert thresh == 80.0
 
     def test_between_thresholds(self) -> None:
-        mapping = ((40.0, 15.0), (80.0, 100.0))
-        assert (
-            Mappings.lookup(60, mapping) == 15.0
-        )  # piecewise constant: 60 >= 40, < 80
+        mapping = ((40.0, 15.0, 0.0), (80.0, 100.0, 0.0))
+        speed, thresh = Mappings.lookup(60, mapping)
+        assert speed == 15.0  # piecewise constant: 60 >= 40, < 80
+        assert thresh == 40.0
+
+    def test_hysteresis_rising(self) -> None:
+        mapping = ((40.0, 15.0, 5.0), (70.0, 50.0, 5.0), (80.0, 100.0, 5.0))
+        # Rising from below - active at 40, now at 75 -> should go to 70 threshold
+        speed, thresh = Mappings.lookup(75, mapping, active_threshold=40.0)
+        assert speed == 50.0
+        assert thresh == 70.0
+
+    def test_hysteresis_falling_stays(self) -> None:
+        mapping = ((40.0, 15.0, 5.0), (70.0, 50.0, 5.0), (80.0, 100.0, 5.0))
+        # Falling from 80 to 68 - should stay at 70 threshold (68 >= 70-5=65)
+        speed, thresh = Mappings.lookup(68, mapping, active_threshold=70.0)
+        assert speed == 50.0
+        assert thresh == 70.0
+
+    def test_hysteresis_falling_drops(self) -> None:
+        mapping = ((40.0, 15.0, 5.0), (70.0, 50.0, 5.0), (80.0, 100.0, 5.0))
+        # Falling from 70 to 64 - should drop to 40 threshold (64 < 70-5=65)
+        speed, thresh = Mappings.lookup(64, mapping, active_threshold=70.0)
+        assert speed == 15.0
+        assert thresh == 40.0
 
 
 class TestFanDaemon:
@@ -162,18 +191,18 @@ class TestFanDaemon:
         return Config(
             mappings=Mappings(
                 {
-                    ("cpu", -1, -1): ((40.0, 15.0), (80.0, 100.0)),
-                    ("gpu", -1, -1): ((40.0, 15.0), (80.0, 100.0)),
-                    ("ram", -1, -1): ((40.0, 15.0), (80.0, 100.0)),
-                    ("hdd", -1, -1): ((25.0, 15.0), (50.0, 100.0)),
-                    ("nvme", -1, -1): ((35.0, 15.0), (70.0, 100.0)),
+                    ("cpu", -1, -1): ((40.0, 15.0, 0.0), (80.0, 100.0, 0.0)),
+                    ("gpu", -1, -1): ((40.0, 15.0, 0.0), (80.0, 100.0, 0.0)),
+                    ("ram", -1, -1): ((40.0, 15.0, 0.0), (80.0, 100.0, 0.0)),
+                    ("hdd", -1, -1): ((25.0, 15.0, 0.0), (50.0, 100.0, 0.0)),
+                    ("nvme", -1, -1): ((35.0, 15.0, 0.0), (70.0, 100.0, 0.0)),
                 }
             ),
             zones={
                 0: ZoneConfig(speed_step_percent=10),
                 1: ZoneConfig(speed_step_percent=10),
             },
-            sensitivity_celsius=2.0,
+            hysteresis_celsius=5.0,
         )
 
     @pytest.fixture
@@ -216,11 +245,36 @@ class TestFanDaemon:
         daemon.control_loop()
         assert hardware.full_speed_called
 
-    def test_sensitivity(self, daemon: FanDaemon, hardware: MockHardware) -> None:
-        hardware.cpu_temps = [60.0]
+    def test_hysteresis(self, daemon: FanDaemon, hardware: MockHardware) -> None:
+        # Set up mapping with clear thresholds - use zone 0 specific keys to override defaults
+        daemon.config = Config(
+            mappings=Mappings(
+                {
+                    ("cpu", -1, 0): ((40.0, 15.0, 5.0), (70.0, 50.0, 5.0)),
+                    ("gpu", -1, 0): ((40.0, 15.0, 5.0), (70.0, 50.0, 5.0)),
+                    ("ram", -1, 0): ((40.0, 15.0, 5.0), (70.0, 50.0, 5.0)),
+                    ("hdd", -1, 0): ((25.0, 15.0, 5.0), (50.0, 100.0, 5.0)),
+                    ("nvme", -1, 0): ((35.0, 15.0, 5.0), (70.0, 100.0, 5.0)),
+                }
+            ),
+            zones={
+                0: ZoneConfig(speed_step_percent=10),
+                1: ZoneConfig(speed_step_percent=10),
+            },
+            hysteresis_celsius=5.0,
+        )
+        hardware.cpu_temps = [75.0]
         hardware.gpu_temps = []
         daemon.control_loop()
-        hardware.cpu_temps = [61.0]
-        hardware.zone_speeds.clear()
+        # Should be at 70 threshold -> 50%
+        assert hardware.zone_speeds[0] == 50
+
+        # Drop to 68 - should stay at 50% due to hysteresis (68 >= 70-5=65)
+        hardware.cpu_temps = [68.0]
         daemon.control_loop()
-        assert len(hardware.zone_speeds) == 0  # skipped due to sensitivity
+        assert hardware.zone_speeds[0] == 50
+
+        # Drop to 64 - should drop to 15% (64 < 65)
+        hardware.cpu_temps = [64.0]
+        daemon.control_loop()
+        assert hardware.zone_speeds[0] == 20  # quantized to step

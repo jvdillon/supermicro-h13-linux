@@ -34,7 +34,10 @@ logging.basicConfig(
 )
 log = logging.getLogger("fan-daemon")
 
-DeviceCelsiusToFanZonePercent = tuple[tuple[float, float], ...]
+# (threshold_temp, fan_speed_percent, hysteresis_celsius)
+# hysteresis=0 means use global default
+MappingPoint = tuple[float, float, float]
+DeviceCelsiusToFanZonePercent = tuple[MappingPoint, ...]
 MappingKey = tuple[str, int, int]  # (device_type, device_idx, zone); -1 means "all"
 
 
@@ -47,36 +50,43 @@ class Mappings:
         self,
         overrides: dict[MappingKey, DeviceCelsiusToFanZonePercent | None] | None = None,
     ):
+        # (temp, speed, hysteresis) - hysteresis=0 means use global default
         self.mappings = {
             ("cpu", -1, 0): (
-                (40, 15),
-                (60, 30),
-                (75, 60),
-                (85, 100),
+                (40, 15, 0),
+                (60, 30, 0),
+                (75, 60, 0),
+                (85, 100, 0),
             ),
-            ("gpu", -1, -1): (
-                (50, 15),
-                (70, 20),
-                (80, 50),
-                (85, 100),
+            ("gpu", -1, 0): (
+                (50, 15, 0),
+                (70, 20, 0),
+                (80, 50, 0),
+                (85, 100, 0),
+            ),
+            ("gpu", -1, 1): (
+                (50, 15, 0),
+                (60, 50, 0),  # zone1: 50% at GPU 60°C
+                (80, 75, 0),
+                (85, 100, 0),
             ),
             ("ram", -1, 0): (
-                (40, 15),
-                (60, 25),
-                (70, 50),
-                (80, 100),
+                (40, 15, 0),
+                (60, 25, 0),
+                (70, 50, 0),
+                (80, 100, 0),
             ),
             ("hdd", -1, 0): (
-                (25, 15),
-                (40, 25),
-                (45, 50),
-                (50, 100),
+                (25, 15, 0),
+                (40, 25, 0),
+                (45, 50, 0),
+                (50, 100, 0),
             ),
             ("nvme", -1, 0): (
-                (35, 15),
-                (50, 30),
-                (60, 60),
-                (70, 100),
+                (35, 15, 0),
+                (50, 30, 0),
+                (60, 60, 0),
+                (70, 100, 0),
             ),
         }
         if overrides:
@@ -98,20 +108,27 @@ class Mappings:
 
     @classmethod
     def parse(cls, s: str) -> DeviceCelsiusToFanZonePercent | None:
-        """Parse "temp:speed,temp:speed,..." into mapping. Empty string -> None (disabled)."""
+        """Parse "temp:speed[:hyst],..." into mapping. Empty string -> None (disabled)."""
         s = s.strip()
         if not s:
             return None
-        points: list[tuple[float, float]] = []
+        points: list[MappingPoint] = []
         for part in s.split(","):
             part = part.strip()
             if not part:
                 continue
-            t, sp = part.split(":")
-            temp, speed = float(t), float(sp)
+            pieces = part.split(":")
+            if len(pieces) < 2 or len(pieces) > 3:
+                raise ValueError(
+                    "Invalid point format: %s (expected temp:speed[:hyst])" % part
+                )
+            temp, speed = float(pieces[0]), float(pieces[1])
+            hyst = float(pieces[2]) if len(pieces) == 3 else 0.0
             if not 0 <= speed <= 100:
                 raise ValueError("Speed must be 0-100, got %s" % speed)
-            points.append((temp, speed))
+            if hyst < 0:
+                raise ValueError("Hysteresis must be >= 0, got %s" % hyst)
+            points.append((temp, speed, hyst))
         if len(points) < 2:
             raise ValueError("Mapping must have at least 2 points")
         points.sort(key=lambda p: p[0])
@@ -139,12 +156,56 @@ class Mappings:
         ), mapping
 
     @classmethod
-    def lookup(cls, temp: float, mapping: DeviceCelsiusToFanZonePercent) -> float:
-        """Piecewise constant lookup - return speed for highest threshold <= temp."""
-        for t, s in reversed(mapping):
+    def lookup(
+        cls,
+        temp: float,
+        mapping: DeviceCelsiusToFanZonePercent,
+        active_threshold: float | None = None,
+        default_hysteresis: float = 5.0,
+    ) -> tuple[float, float]:
+        """Piecewise constant lookup with hysteresis.
+
+        Returns (speed, new_active_threshold).
+
+        When temp is falling (below active_threshold), stays at current threshold
+        until temp drops below (threshold - hysteresis).
+        """
+        # Find normal threshold (highest t where temp >= t)
+        normal_idx = -1
+        for i, (t, _, _) in enumerate(mapping):
             if temp >= t:
-                return s
-        return mapping[0][1]
+                normal_idx = i
+
+        if normal_idx < 0:
+            # Below all thresholds, use first speed
+            return mapping[0][1], mapping[0][0]
+
+        normal_thresh = mapping[normal_idx][0]
+        normal_speed = mapping[normal_idx][1]
+
+        if active_threshold is None:
+            return normal_speed, normal_thresh
+
+        # Find index of active threshold
+        active_idx = -1
+        for i, (t, _, _) in enumerate(mapping):
+            if t == active_threshold:
+                active_idx = i
+                break
+
+        if active_idx < 0 or normal_idx >= active_idx:
+            # Rising or same threshold, use normal
+            return normal_speed, normal_thresh
+
+        # Falling - check if we should drop
+        active_t, active_s, active_h = mapping[active_idx]
+        hyst = active_h if active_h > 0 else default_hysteresis
+        if temp < active_t - hyst:
+            # Drop to new threshold
+            return normal_speed, normal_thresh
+        else:
+            # Stay at active threshold
+            return active_s, active_t
 
 
 @dataclasses.dataclass(slots=True, kw_only=True)
@@ -204,7 +265,7 @@ class Config:
     zones: dict[int, ZoneConfig] = dataclasses.field(
         default_factory=lambda: {0: ZoneConfig(), 1: ZoneConfig()}
     )
-    sensitivity_celsius: float = 2.0
+    hysteresis_celsius: float = 5.0
     interval_seconds: float = 5.0
     gpu_slots: int = 5
     ram_sensors: tuple[str, ...] = ("DIMMA~F Temp", "DIMMG~L Temp")
@@ -221,11 +282,15 @@ class Config:
             description="Fan daemon for server motherboards",
             formatter_class=argparse.RawDescriptionHelpFormatter,
             epilog="""
-Mapping format: DEVICE[N]-zone[M]=TEMP:SPEED,TEMP:SPEED,...
+Mapping format: DEVICE[N]-zone[M]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
+  HYST is optional per-point hysteresis (default: --hysteresis value).
+  Hysteresis prevents oscillation: fans stay high until temp drops HYST below threshold.
+
   Examples:
     --mapping gpu-zone=50:15,85:100       All GPUs, all zones
     --mapping gpu-zone0=50:15,85:100      All GPUs, zone 0 only
     --mapping gpu0-zone1=60:20,85:100     GPU #0, zone 1 only
+    --mapping gpu-zone=50:15:3,70:50:5    Custom hysteresis per point
     --mapping hdd-zone=                   Disable HDD mappings
 
   Precedence (most specific wins):
@@ -258,10 +323,10 @@ Mapping format: DEVICE[N]-zone[M]=TEMP:SPEED,TEMP:SPEED,...
             help="Speed step %%.",
         )
         _ = p.add_argument(
-            "--sensitivity",
+            "--hysteresis",
             type=float,
-            default=2.0,
-            help="Ignore temp changes smaller than (C).",
+            default=5.0,
+            help="Default hysteresis (C) for falling temps.",
         )
         _ = p.add_argument(
             "--interval",
@@ -308,7 +373,7 @@ Mapping format: DEVICE[N]-zone[M]=TEMP:SPEED,TEMP:SPEED,...
         if nvme_str:
             nvme = tuple(x.strip() for x in nvme_str.split(",") if x.strip())
         speed_step = int(ns["speed_step"])  # pyright: ignore[reportAny]
-        sensitivity = float(ns["sensitivity"])  # pyright: ignore[reportAny]
+        hysteresis = float(ns["hysteresis"])  # pyright: ignore[reportAny]
         interval = float(ns["interval"])  # pyright: ignore[reportAny]
         gpu_slots = int(ns["gpu_slots"])  # pyright: ignore[reportAny]
         zones = {
@@ -322,7 +387,7 @@ Mapping format: DEVICE[N]-zone[M]=TEMP:SPEED,TEMP:SPEED,...
         return cls(
             mappings=Mappings(user_mappings),
             zones=zones,
-            sensitivity_celsius=sensitivity,
+            hysteresis_celsius=hysteresis,
             interval_seconds=interval,
             gpu_slots=gpu_slots,
             hdd_devices=hdd,
@@ -591,13 +656,14 @@ class FanDaemon:
     config: Config
     hardware: Hardware
     running: bool
-    last_temps: dict[int, float]
+    # Maps (device_type, device_idx, zone) -> active threshold temperature
+    active_thresholds: dict[tuple[str, int, int], float]
 
     def __init__(self, config: Config, hardware: Hardware) -> None:
         self.config = config
         self.hardware = hardware
         self.running = False
-        self.last_temps = {}
+        self.active_thresholds = {}
 
     @staticmethod
     def _quantize_speed(speed: float, step: int) -> int:
@@ -632,23 +698,39 @@ class FanDaemon:
         """Compute fan speed per zone. Returns {zone: (speed, trigger, temp)}."""
         cfg = self.config
         device_temps = [
-            ("CPU", temps.cpus_celsius),
-            ("GPU", temps.gpus_celsius),
-            ("RAM", temps.rams_celsius),
-            ("HDD", temps.hdds_celsius),
-            ("NVMe", temps.nvmes_celsius),
+            ("cpu", temps.cpus_celsius),
+            ("gpu", temps.gpus_celsius),
+            ("ram", temps.rams_celsius),
+            ("hdd", temps.hdds_celsius),
+            ("nvme", temps.nvmes_celsius),
         ]
         results: dict[int, tuple[int, str, float]] = {}
         for zone, zc in cfg.zones.items():
-            candidates: list[tuple[float, str, float]] = []
+            candidates: list[tuple[float, str, float, str, int, float]] = []
             for name, temp_list in device_temps:
                 for idx, temp in enumerate(temp_list):
-                    if (m := cfg.mappings.get(name.lower(), idx, zone)) is not None:
+                    if (m := cfg.mappings.get(name, idx, zone)) is not None:
+                        key = (name, idx, zone)
+                        active_thresh = self.active_thresholds.get(key)
+                        speed, new_thresh = Mappings.lookup(
+                            temp, m, active_thresh, cfg.hysteresis_celsius
+                        )
                         candidates.append(
-                            (Mappings.lookup(temp, m), "%s%d" % (name, idx), temp)
+                            (
+                                speed,
+                                "%s%d" % (name.upper(), idx),
+                                temp,
+                                name,
+                                idx,
+                                new_thresh,
+                            )
                         )
             if candidates:
-                raw_speed, trigger, temp = max(candidates, key=lambda x: x[0])
+                raw_speed, trigger, temp, dev_name, dev_idx, new_thresh = max(
+                    candidates, key=lambda x: x[0]
+                )
+                # Update active threshold for the winning device
+                self.active_thresholds[(dev_name, dev_idx, zone)] = new_thresh
                 speed = max(
                     zc.min_speed_percent,
                     min(
@@ -667,26 +749,18 @@ class FanDaemon:
         if temps is None:
             log.error("Failed to read temps, going to full speed")
             _ = self.hardware.set_full_speed()
-            self.last_temps.clear()
+            self.active_thresholds.clear()
             return
 
         zone_speeds = self.compute_zone_speeds(temps)
         changed_zones: list[str] = []
 
         for zone, (speed, trigger, trigger_temp) in zone_speeds.items():
-            last_temp = self.last_temps.get(zone)
-            if (
-                last_temp is not None
-                and abs(trigger_temp - last_temp) < self.config.sensitivity_celsius
-            ):
-                continue
-
             if not self.hardware.set_zone_speed(zone, speed):
                 _ = self.hardware.set_full_speed()
-                self.last_temps.clear()
+                self.active_thresholds.clear()
                 return
 
-            self.last_temps[zone] = trigger_temp
             changed_zones.append(f"z{zone}:{trigger}={trigger_temp:.0f}C->{speed}%")
 
         if changed_zones:
