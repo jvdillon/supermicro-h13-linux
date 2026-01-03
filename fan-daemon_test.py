@@ -99,6 +99,14 @@ class TestMappingsParse:
         with pytest.raises(ValueError, match="Speed must be 0-100"):
             Mappings.parse("40:15,80:150")
 
+    def test_invalid_hysteresis(self) -> None:
+        with pytest.raises(ValueError, match="Hysteresis must be >= 0"):
+            Mappings.parse("40:15:-5,80:100:5")
+
+    def test_invalid_format(self) -> None:
+        with pytest.raises(ValueError, match="Invalid point format"):
+            Mappings.parse("40:15:5:extra,80:100")
+
 
 class TestMappingsParseSpec:
     def test_gpu_zone(self) -> None:
@@ -118,6 +126,18 @@ class TestMappingsParseSpec:
         key, mapping = Mappings.parse_spec("hdd-zone=")
         assert key == ("hdd", -1, -1)
         assert mapping is None
+
+    def test_missing_equals(self) -> None:
+        with pytest.raises(ValueError, match="missing '='"):
+            Mappings.parse_spec("gpu-zone40:15,80:100")
+
+    def test_invalid_key_format(self) -> None:
+        with pytest.raises(ValueError, match="Invalid mapping key format"):
+            Mappings.parse_spec("badkey=40:15,80:100")
+
+    def test_ram_zone(self) -> None:
+        key, _ = Mappings.parse_spec("ram-zone0=40:15,80:100")
+        assert key == ("ram", -1, 0)
 
 
 class TestMappingsGet:
@@ -278,3 +298,59 @@ class TestFanDaemon:
         hardware.cpu_temps = [64.0]
         daemon.control_loop()
         assert hardware.zone_speeds[0] == 20  # quantized to step
+
+    def test_get_all_temps_gpu_failure(
+        self, daemon: FanDaemon, hardware: MockHardware
+    ) -> None:
+        hardware.gpu_temps = None
+        assert daemon.get_all_temps() is None
+
+    def test_get_all_temps_ram_failure(
+        self, daemon: FanDaemon, hardware: MockHardware
+    ) -> None:
+        hardware.ram_temps = None
+        assert daemon.get_all_temps() is None
+
+    def test_get_all_temps_hdd_failure(
+        self, daemon: FanDaemon, hardware: MockHardware
+    ) -> None:
+        hardware.hdd_temps = None
+        assert daemon.get_all_temps() is None
+
+    def test_get_all_temps_nvme_failure(
+        self, daemon: FanDaemon, hardware: MockHardware
+    ) -> None:
+        hardware.nvme_temps = None
+        assert daemon.get_all_temps() is None
+
+    def test_quantize_speed(self, daemon: FanDaemon) -> None:
+        assert daemon._quantize_speed(15, 10) == 20
+        assert daemon._quantize_speed(14, 10) == 10
+        assert daemon._quantize_speed(25, 10) == 30
+        assert daemon._quantize_speed(50, 10) == 50
+
+    def test_control_loop_set_zone_speed_failure(
+        self, daemon: FanDaemon, hardware: MockHardware
+    ) -> None:
+        # Make set_zone_speed fail
+        def fail_set_zone_speed(zone: int, percent: int) -> bool:
+            return False
+
+        hardware.set_zone_speed = fail_set_zone_speed  # type: ignore[method-assign]
+        daemon.control_loop()
+        assert hardware.full_speed_called
+
+    def test_compute_zone_speeds_no_candidates(
+        self, daemon: FanDaemon, hardware: MockHardware
+    ) -> None:
+        # Use empty mappings
+        daemon.config = Config(
+            mappings=Mappings({}),
+            zones={0: ZoneConfig()},
+        )
+        hardware.cpu_temps = []
+        hardware.gpu_temps = []
+        temps = daemon.get_all_temps()
+        assert temps is not None
+        speeds = daemon.compute_zone_speeds(temps)
+        assert speeds[0] == (15, "none", 0.0)  # min speed, no trigger
