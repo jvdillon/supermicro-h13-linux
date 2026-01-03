@@ -336,7 +336,8 @@ class TestFanDaemon:
         self, daemon: FanDaemon, hardware: MockHardware
     ) -> None:
         # Make set_zone_speed fail
-        def fail_set_zone_speed(zone: int, percent: int) -> bool:
+        def fail_set_zone_speed(zone: int, percent: int) -> bool:  # noqa: ARG001
+            del zone, percent
             return False
 
         hardware.set_zone_speed = fail_set_zone_speed  # type: ignore[method-assign]
@@ -357,3 +358,208 @@ class TestFanDaemon:
         assert temps is not None
         speeds = daemon.compute_zone_speeds(temps)
         assert speeds[0] == (15, "none", 0.0)  # min speed, no trigger
+
+
+class TestSupermicro:
+    """Tests for Supermicro hardware class with mocked _run_cmd."""
+
+    @pytest.fixture
+    def config(self) -> Config:
+        return Config(
+            hdd_devices=(),  # Disable auto-detect
+            nvme_devices=(),  # Disable auto-detect
+        )
+
+    @pytest.fixture
+    def hw(self, config: Config) -> Supermicro:
+        with patch.object(_module, "_detect_hdds", return_value=()):
+            with patch.object(_module, "_detect_nvmes", return_value=()):
+                return Supermicro(config)
+
+    def test_get_cpu_temps_success(self, hw: Supermicro) -> None:
+        ipmi_output = """Sensor ID              : CPU Temp (0x1)
+ Entity ID             : 3.1 (Processor)
+ Sensor Type (Threshold)  : Temperature (0x01)
+ Sensor Reading        : 45 (+/- 0) degrees C
+ Status                : ok
+"""
+        with patch.object(_module, "_run_cmd", return_value=ipmi_output):
+            temps = hw.get_cpu_temps()
+        assert temps == [45.0]
+
+    def test_get_cpu_temps_failure(self, hw: Supermicro) -> None:
+        with patch.object(_module, "_run_cmd", return_value=None):
+            temps = hw.get_cpu_temps()
+        assert temps is None
+
+    def test_get_cpu_temps_parse_failure(self, hw: Supermicro) -> None:
+        with patch.object(_module, "_run_cmd", return_value="garbage output"):
+            temps = hw.get_cpu_temps()
+        assert temps is None
+
+    def test_get_gpu_temps_nvidia_success(self, hw: Supermicro) -> None:
+        nvidia_output = "65\n70\n"
+        with patch.object(_module, "_run_cmd", return_value=nvidia_output):
+            temps = hw.get_gpu_temps()
+        assert temps == [65.0, 70.0]
+
+    def test_get_gpu_temps_nvidia_failure_ipmi_fallback(self, hw: Supermicro) -> None:
+        ipmi_output = """Sensor ID              : GPU1 Temp (0x1)
+ Sensor Reading        : 72 degrees C
+"""
+
+        def mock_run_cmd(cmd: list[str], _timeout: float) -> str | None:
+            if "nvidia-smi" in cmd:
+                return None
+            if "GPU1 Temp" in cmd:
+                return ipmi_output
+            return None
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            temps = hw.get_gpu_temps()
+        assert temps == [72.0]
+
+    def test_get_gpu_temps_all_fail(self, hw: Supermicro) -> None:
+        with patch.object(_module, "_run_cmd", return_value=None):
+            temps = hw.get_gpu_temps()
+        assert temps is None
+
+    def test_get_ram_temps_success(self, hw: Supermicro) -> None:
+        ipmi_output = """Sensor ID              : DIMMA~F Temp (0x1)
+ Sensor Reading        : 38 degrees C
+"""
+        with patch.object(_module, "_run_cmd", return_value=ipmi_output):
+            temps = hw.get_ram_temps()
+        assert 38.0 in temps
+
+    def test_get_hdd_temps_success(self) -> None:
+        config = Config(hdd_devices=("/dev/sda",), nvme_devices=())
+        with patch.object(_module, "_detect_hdds", return_value=()):
+            with patch.object(_module, "_detect_nvmes", return_value=()):
+                hw = Supermicro(config)
+        smartctl_output = """smartctl 7.4 2023-08-01 r5530
+=== START OF READ SMART DATA SECTION ===
+SMART Attributes Data Structure revision number: 16
+Vendor Specific SMART Attributes with Thresholds:
+ID# ATTRIBUTE_NAME          FLAG     VALUE WORST THRESH TYPE      UPDATED  WHEN_FAILED RAW_VALUE
+194 Temperature_Celsius     0x0022   100   100   000    Old_age   Always       -       35
+"""
+        with patch.object(_module, "_run_cmd", return_value=smartctl_output):
+            temps = hw.get_hdd_temps()
+        assert temps == [35.0]
+
+    def test_get_nvme_temps_success(self) -> None:
+        config = Config(hdd_devices=(), nvme_devices=("/dev/nvme0n1",))
+        with patch.object(_module, "_detect_hdds", return_value=()):
+            with patch.object(_module, "_detect_nvmes", return_value=()):
+                hw = Supermicro(config)
+        nvme_output = """Smart Log for NVME device:nvme0n1 namespace-id:ffffffff
+critical_warning                        : 0
+temperature                             : 42 C
+"""
+        with patch.object(_module, "_run_cmd", return_value=nvme_output):
+            temps = hw.get_nvme_temps()
+        assert temps == [42.0]
+
+    def test_set_zone_speed_success(self, hw: Supermicro) -> None:
+        call_count = 0
+
+        def mock_run_cmd(cmd: list[str], _timeout: float) -> str | None:
+            nonlocal call_count
+            call_count += 1
+            if "0x45" in cmd and "0x00" in cmd:
+                return "01"  # Already in full mode
+            return ""
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            result = hw.set_zone_speed(0, 50)
+        assert result is True
+        assert hw.current_speeds[0] == 50
+
+    def test_set_zone_speed_cached(self, hw: Supermicro) -> None:
+        hw.current_speeds[0] = 50
+        call_count = 0
+
+        def mock_run_cmd(_cmd: list[str], _timeout: float) -> str | None:
+            nonlocal call_count
+            call_count += 1
+            return ""
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            result = hw.set_zone_speed(0, 50)
+        assert result is True
+        assert call_count == 0  # No calls because speed is cached
+
+    def test_set_zone_speed_failure(self, hw: Supermicro) -> None:
+        def mock_run_cmd(cmd: list[str], _timeout: float) -> str | None:
+            if "0x45" in cmd and "0x00" in cmd:
+                return "01"  # Already in full mode
+            if "0x66" in cmd:
+                return None  # Fail the set speed command
+            return ""
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            result = hw.set_zone_speed(0, 50)
+        assert result is False
+
+    def test_set_full_speed(self, hw: Supermicro) -> None:
+        def mock_run_cmd(cmd: list[str], _timeout: float) -> str | None:
+            if "0x45" in cmd and "0x00" in cmd:
+                return "01"
+            return ""
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            result = hw.set_full_speed()
+        assert result is True
+        assert hw.current_speeds[0] == 100
+        assert hw.current_speeds[1] == 100
+
+    def test_detect_gpus(self, hw: Supermicro) -> None:
+        nvidia_output = "65\n70\n"
+        with patch.object(_module, "_run_cmd", return_value=nvidia_output):
+            count = hw.detect_gpus()
+        assert count == 2
+
+    def test_valid_temp_in_range(self, hw: Supermicro) -> None:
+        assert hw._valid_temp(50.0) == 50.0
+
+    def test_valid_temp_out_of_range(self, hw: Supermicro) -> None:
+        assert hw._valid_temp(-10.0) is None
+        assert hw._valid_temp(150.0) is None
+
+    def test_parse_nvidia_temps_invalid(self, hw: Supermicro) -> None:
+        assert hw._parse_nvidia_temps("not a number\n") is None
+
+    def test_parse_nvidia_temps_out_of_range(self, hw: Supermicro) -> None:
+        assert hw._parse_nvidia_temps("150\n") is None
+
+    def test_ensure_full_mode_needs_set(self, hw: Supermicro) -> None:
+        call_sequence: list[str] = []
+
+        def mock_run_cmd(cmd: list[str], _timeout: float) -> str | None:
+            call_sequence.append(" ".join(cmd))
+            if "0x45" in cmd and "0x00" in cmd:
+                return "00"  # Not in full mode
+            if "0x45" in cmd and "0x01" in cmd:
+                return ""  # Set mode success
+            return ""
+
+        def noop_sleep(_seconds: float) -> None:
+            pass
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            with patch.object(_module, "time") as mock_time:
+                mock_time.sleep = noop_sleep  # type: ignore[assignment]
+                result = hw._ensure_full_mode()
+        assert result is True
+        assert any("0x01 0x01" in c for c in call_sequence)
+
+    def test_ensure_full_mode_failure(self, hw: Supermicro) -> None:
+        def mock_run_cmd(cmd: list[str], _timeout: float) -> str | None:
+            if "0x45" in cmd:
+                return None  # All mode commands fail
+            return ""
+
+        with patch.object(_module, "_run_cmd", side_effect=mock_run_cmd):
+            result = hw._ensure_full_mode()
+        assert result is False
