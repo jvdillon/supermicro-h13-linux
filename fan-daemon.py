@@ -130,13 +130,14 @@ class SupermicroH13:
             return None
 
         # Collect temps as lists first, convert to tuples at end
+        # Order: devices with curves first, then informational
         temps: dict[str, list[int]] = {
             "cpu": [],
+            "ram": [],
+            "nvme": [],
+            "hdd": [],
             "gpu": [],
             "gpu_ipmi": [],
-            "ram": [],
-            "hdd": [],
-            "nvme": [],
             "vrm_soc": [],
             "vrm_cpu": [],
             "vrm_vddio": [],
@@ -695,37 +696,47 @@ class FanDaemon:
         # e.g., "z0:25%  z1:35%" - need to know width of each zone column
         zone_col_width = 7  # "z0:100%" = 7 chars
 
-        # Format each device
-        for name, values in sorted(temps.items()):
+        # Partition devices: those with curves first, then informational
+        devices_with_curves: list[tuple[str, int, int]] = []
+        devices_without_curves: list[tuple[str, int, int]] = []
+        for name, values in temps.items():
             for idx, temp in enumerate(values or ()):
-                device_name = f"{name}{idx}"
-                device_tag = f"{name.upper()}{idx}"
+                has_curve = any(self.speed.get(name, idx, z) is not None for z in zones)
+                if has_curve:
+                    devices_with_curves.append((name, idx, temp))
+                else:
+                    devices_without_curves.append((name, idx, temp))
 
-                # Get zone speeds from curves
-                zone_strs: list[str] = []
-                for zone in zones:
-                    mapping = self.speed.get(name, idx, zone)
-                    if mapping is not None:
-                        active_thresh = self.active_thresholds.get((name, idx, zone))
-                        spd, _ = self.speed.lookup(temp, mapping, active_thresh)
-                        zone_strs.append(f"z{zone}:{int(spd)}%")
-                    else:
-                        zone_strs.append("")  # No curve for this zone
+        # Format each device (curves first, then informational)
+        for name, idx, temp in devices_with_curves + devices_without_curves:
+            device_name = f"{name}{idx}"
+            device_tag = f"{name.upper()}{idx}"
 
-                # Check if this device is a winner for any zone
-                winner_zones = [z for z, w in winners.items() if w == device_tag]
-                winner_marker = ""
-                if winner_zones:
-                    winner_marker = "  <-- " + ",".join(f"z{z}" for z in winner_zones)
+            # Get zone speeds from curves
+            zone_strs: list[str] = []
+            for zone in zones:
+                mapping = self.speed.get(name, idx, zone)
+                if mapping is not None:
+                    active_thresh = self.active_thresholds.get((name, idx, zone))
+                    spd, _ = self.speed.lookup(temp, mapping, active_thresh)
+                    zone_strs.append(f"z{zone}:{int(spd)}%")
+                else:
+                    zone_strs.append("")  # No curve for this zone
 
-                # Format the line with alignment
-                zone_str = "  ".join(f"{s:<{zone_col_width}}" for s in zone_strs)
-                zone_str = zone_str.rstrip()
-                line = f"      {device_name:<{max_name_len}}  {temp:>3}C"
-                if zone_str:
-                    line += f"  {zone_str}"
-                line += winner_marker
-                lines.append(line)
+            # Check if this device is a winner for any zone
+            winner_zones = [z for z, w in winners.items() if w == device_tag]
+            winner_marker = ""
+            if winner_zones:
+                winner_marker = "  <-- " + ",".join(f"z{z}" for z in winner_zones)
+
+            # Format the line with alignment
+            zone_str = "  ".join(f"{s:<{zone_col_width}}" for s in zone_strs)
+            zone_str = zone_str.rstrip()
+            line = f"      {device_name:<{max_name_len}}  {temp:>3}C"
+            if zone_str:
+                line += f"  {zone_str}"
+            line += winner_marker
+            lines.append(line)
 
         return "\n".join(lines)
 
