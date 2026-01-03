@@ -57,6 +57,7 @@ class Mappings:
     ):
         # (temp, speed, hysteresis) - hysteresis=0 means use global default
         # Throttle temps: CPU 100°C, GPU 90°C, RAM 85°C, HDD 60°C, NVMe 85°C
+        # Generally we set 100% at 85% of throttle.
         self.mappings = {
             # CPU: AMD EPYC 9555 - throttle 100°C
             ("cpu", -1, 0): (
@@ -74,7 +75,7 @@ class Mappings:
                 (80, 60, 0),
                 (87, 100, 0),
             ),
-            ("gpu", -1, 1): (
+            ("gpu", -1, 1): (  # Essentially the GPU zone.
                 (40, 30, 0),
                 (50, 50, 0),
                 (60, 70, 0),
