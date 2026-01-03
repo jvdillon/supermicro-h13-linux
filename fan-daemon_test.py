@@ -7,6 +7,7 @@ from __future__ import annotations
 import sys
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
+from unittest.mock import patch
 
 import pytest
 
@@ -22,6 +23,8 @@ Mappings = _module.Mappings
 FanDaemon = _module.FanDaemon
 Temps = _module.Temps
 ZoneConfig = _module.ZoneConfig
+Supermicro = _module.Supermicro
+_run_cmd = _module._run_cmd
 
 
 class MockHardware:
@@ -324,9 +327,9 @@ class TestFanDaemon:
         assert daemon.get_all_temps() is None
 
     def test_quantize_speed(self, daemon: FanDaemon) -> None:
-        assert daemon._quantize_speed(15, 10) == 20
+        assert daemon._quantize_speed(15, 10) == 20  # round(1.5) = 2 (banker's)
         assert daemon._quantize_speed(14, 10) == 10
-        assert daemon._quantize_speed(25, 10) == 30
+        assert daemon._quantize_speed(26, 10) == 30  # round(2.6) = 3
         assert daemon._quantize_speed(50, 10) == 50
 
     def test_control_loop_set_zone_speed_failure(

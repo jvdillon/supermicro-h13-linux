@@ -161,7 +161,7 @@ class Mappings:
         key_part, mapping_part = spec.split("=", 1)
         mapping = cls.parse(mapping_part)
         m = re.match(
-            r"^(cpu|gpu|hdd|nvme)(\d+)?-zone(\d+)?$",
+            r"^(cpu|gpu|ram|hdd|nvme)(\d+)?-zone(\d+)?$",
             key_part.strip().lower(),
         )
         if not m:
