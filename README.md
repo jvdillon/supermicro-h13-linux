@@ -64,10 +64,10 @@ View options:
 Override temperature mappings via command line:
 
 ```bash
-# Format: DEVICE[N]-zone[M]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
---mapping gpu-zone=50:20,70:50,85:100      # All GPUs, all zones
+# Format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
+--mapping gpu=50:20,70:50,85:100           # All GPUs, all zones
 --mapping gpu0-zone1=60:30,80:100          # GPU 0, zone 1 only
---mapping hdd-zone=                         # Disable HDD control
+--mapping hdd=                              # Disable HDD control
 ```
 
 To modify the installed service:
@@ -79,7 +79,7 @@ sudo systemctl edit fan-daemon --full
 ### Dependencies
 
 ```bash
-sudo apt install ipmitool nvme-cli
+sudo apt install ipmitool smartmontools nvme-cli
 # nvidia driver required for GPU temp monitoring
 ```
 

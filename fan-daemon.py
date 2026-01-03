@@ -14,10 +14,11 @@ Monitor logs:
     journalctl -u fan-daemon -f
 
 Dependencies:
-    sudo apt install ipmitool nvme-cli nvidia-open
-    # ipmitool     - IPMI fan control and CPU/RAM temp monitoring
-    # nvme-cli     - NVMe temperature monitoring (optional)
-    # nvidia-open  - GPU temperature monitoring via nvidia-smi (optional)
+    sudo apt install ipmitool smartmontools nvme-cli nvidia-open
+    # ipmitool      - IPMI fan control and CPU/RAM temp monitoring
+    # smartmontools - HDD temperature monitoring via smartctl (optional)
+    # nvme-cli      - NVMe temperature monitoring (optional)
+    # nvidia-open   - nvidia-smi (+driver) for GPU temp monitoring (optional)
 """
 
 from __future__ import annotations
@@ -31,83 +32,179 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Protocol, cast
+from typing import Protocol, cast, final
 
 log = logging.getLogger("fan-daemon")
 
 # (threshold_temp, fan_speed_percent, hysteresis_celsius)
-# hysteresis=0 means use global default
-MappingPoint = tuple[float, float, float]
-DeviceCelsiusToFanZonePercent = tuple[MappingPoint, ...]
+# hysteresis=None means use global default
+MappingPoint = tuple[float, float, float | None]
 MappingKey = tuple[str, int, int]  # (device_type, device_idx, zone); -1 means "all"
 
 
-class Mappings:
+@final
+class FanSpeed:
     """Temperature-to-fan-speed mapping lookup with precedence."""
 
-    mappings: dict[MappingKey, DeviceCelsiusToFanZonePercent | None]
+    @dataclasses.dataclass(slots=True, kw_only=True)
+    class Config:
+        """Handles --mapping and --hysteresis flags."""
 
-    def __init__(
-        self,
-        overrides: dict[MappingKey, DeviceCelsiusToFanZonePercent | None] | None = None,
-    ):
-        # (temp, speed, hysteresis) - hysteresis=0 means use global default
+        # (temp, speed, hysteresis) - hysteresis=None means use global default
         # Throttle temps: CPU 100°C, GPU 90°C, RAM 85°C, HDD 70°C, NVMe 85°C
         # Generally we set 100% at 85% of throttle.
-        self.mappings = {
-            # CPU: AMD EPYC 9555 - throttle 100°C
-            ("cpu", -1, 0): (
-                (40, 15, 0),
-                (60, 30, 0),
-                (75, 60, 0),
-                (85, 100, 0),
-            ),
-            # GPU: NVIDIA RTX 5090 - throttle 90°C
-            ("gpu", -1, 0): (
-                (40, 15, 0),
-                (50, 25, 0),
-                (60, 30, 0),
-                (70, 40, 0),
-                (80, 60, 0),
-                (87, 100, 0),
-            ),
-            ("gpu", -1, 1): (  # Essentially the GPU zone.
-                (40, 30, 0),
-                (50, 50, 0),
-                (60, 70, 0),
-                (70, 100, 0),
-            ),
-            # RAM: DDR5 SK Hynix - max 85°C
-            ("ram", -1, 0): (
-                (40, 15, 0),
-                (60, 25, 0),
-                (70, 50, 0),
-                (80, 100, 0),
-            ),
-            # HDD: Seagate IronWolf Pro - max 70°C
-            ("hdd", -1, 0): (
-                (30, 15, 0),
-                (45, 25, 0),
-                (55, 50, 0),
-                (60, 100, 0),
-            ),
-            # NVMe: WD Black SN8100 - max 85°C
-            ("nvme", -1, 0): (
-                (35, 15, 0),
-                (50, 30, 0),
-                (60, 60, 0),
-                (70, 100, 0),
-            ),
-        }
-        if overrides:
-            self.mappings.update(overrides)
+        speeds: dict[MappingKey, tuple[MappingPoint, ...] | None] = dataclasses.field(
+            default_factory=lambda: {
+                # CPU: AMD EPYC 9555 - throttle 100°C (85%: 85°C)
+                ("cpu", -1, 0): (
+                    (0, 15, None),
+                    (60, 25, None),
+                    (70, 40, None),
+                    (80, 70, None),
+                    (85, 100, None),
+                ),
+                # GPU: NVIDIA RTX 5090 - throttle 90°C (85%: 77°C)
+                # Zone 0 (case fans): steady ramp, hits 100% at 85°C
+                ("gpu", -1, 0): (
+                    (36, 20, None),
+                    (50, 25, None),
+                    (55, 30, None),
+                    (60, 35, None),
+                    (65, 40, None),
+                    (70, 50, None),
+                    (80, 80, None),
+                    (85, 100, None),
+                ),
+                # Zone 1 (GPU fans): more aggressive, hits 100% at 70°C
+                ("gpu", -1, 1): (
+                    (35, 35, None),
+                    (50, 50, None),
+                    (60, 85, None),
+                    (70, 100, None),
+                ),
+                # RAM: DDR5 SK Hynix - max 85°C (85%: 72°C)
+                ("ram", -1, 0): (
+                    (50, 25, None),
+                    (60, 40, None),
+                    (68, 70, None),
+                    (72, 100, None),
+                ),
+                # HDD: Seagate IronWolf Pro - max 70°C (85%: 60°C)
+                ("hdd", -1, 0): (
+                    (42, 25, None),
+                    (48, 40, None),
+                    (54, 70, None),
+                    (60, 100, None),
+                ),
+                # NVMe: WD Black SN8100 - max 85°C (85%: 72°C)
+                ("nvme", -1, 0): (
+                    (50, 25, None),
+                    (58, 40, None),
+                    (65, 70, None),
+                    (72, 100, None),
+                ),
+            }
+        )
+        hysteresis_celsius: float = 5.0
+
+        def setup(self) -> FanSpeed:
+            """Build FanSpeed from this config."""
+            return FanSpeed(self)
+
+        @classmethod
+        def add_args(cls, argparser: argparse.ArgumentParser) -> None:
+            """Add mapping arguments to parser."""
+            _ = argparser.add_argument(
+                "--speeds",
+                action="append",
+                metavar="SPEC",
+                help="Mapping spec. Repeatable.",
+            )
+            _ = argparser.add_argument(
+                "--hysteresis_celsius",
+                type=float,
+                default=5.0,
+                help="Hysteresis (C) for falling temps.",
+            )
+
+        @classmethod
+        def from_args(
+            cls,
+            argparser: argparse.ArgumentParser,
+            args: argparse.Namespace,
+        ) -> FanSpeed.Config:
+            """Create Config from parsed arguments."""
+            config = cls(hysteresis_celsius=cast(float, args.hysteresis_celsius))
+            for spec in cast(list[str], args.speeds or []):
+                try:
+                    key, speeds = cls._parse_speeds(spec)
+                    config.speeds[key] = speeds
+                except ValueError as e:
+                    argparser.error(str(e))
+            return config
+
+        @classmethod
+        def _parse_speeds(
+            cls,
+            spec: str,
+        ) -> tuple[MappingKey, tuple[MappingPoint, ...] | None]:
+            """Parse 'gpu0-zone1=40:15,80:100' into ((device, idx, zone), mapping).
+
+            Zone is optional: 'gpu=...' means all zones.
+            Empty value (e.g. 'gpu=') returns None mapping (disables device).
+            """
+            if "=" not in spec:
+                raise ValueError("Invalid mapping spec (missing '='): %s" % spec)
+            key_part, value_part = spec.split("=", 1)
+
+            # Parse key
+            m = re.match(
+                r"^([a-z][a-z_]*)(\d+)?(?:-zone(\d+)?)?$",
+                key_part.strip().lower(),
+            )
+            if not m:
+                raise ValueError("Invalid mapping key format: %s" % key_part)
+            key: MappingKey = (
+                m.group(1),
+                int(m.group(2)) if m.group(2) else -1,
+                int(m.group(3)) if m.group(3) else -1,
+            )
+
+            # Parse value
+            value_part = value_part.strip()
+            if not value_part:
+                return key, None
+            points: list[MappingPoint] = []
+            for part in value_part.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                pieces = part.split(":")
+                if len(pieces) < 2 or len(pieces) > 3:
+                    raise ValueError(
+                        "Invalid point format: %s (expected temp:speed[:hyst])" % part
+                    )
+                temp, speed = float(pieces[0]), float(pieces[1])
+                hyst: float | None = float(pieces[2]) if len(pieces) == 3 else None
+                if not 0 <= speed <= 100:
+                    raise ValueError("Speed must be 0-100, got %s" % speed)
+                if hyst is not None and hyst < 0:
+                    raise ValueError("Hysteresis must be >= 0, got %s" % hyst)
+                points.append((temp, speed, hyst))
+            if len(points) < 2:
+                raise ValueError("Mapping must have at least 2 points")
+            points.sort(key=lambda pp: pp[0])
+            return key, tuple(points)
+
+    def __init__(self, config: Config):
+        self.config = config
 
     def get(
         self,
         device_type: str,
         device_idx: int,
         zone: int,
-    ) -> DeviceCelsiusToFanZonePercent | None:
+    ) -> tuple[MappingPoint, ...] | None:
         """Look up mapping with precedence: deviceN-zoneM > deviceN-zone > device-zoneM > device-zone."""
         for k in [
             (device_type, device_idx, zone),
@@ -115,66 +212,15 @@ class Mappings:
             (device_type, -1, zone),
             (device_type, -1, -1),
         ]:
-            if k in self.mappings:
-                return self.mappings[k]
+            if k in self.config.speeds:
+                return self.config.speeds[k]
         return None
 
-    @classmethod
-    def parse(cls, s: str) -> DeviceCelsiusToFanZonePercent | None:
-        """Parse "temp:speed[:hyst],..." into mapping. Empty string -> None (disabled)."""
-        s = s.strip()
-        if not s:
-            return None
-        points: list[MappingPoint] = []
-        for part in s.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            pieces = part.split(":")
-            if len(pieces) < 2 or len(pieces) > 3:
-                raise ValueError(
-                    "Invalid point format: %s (expected temp:speed[:hyst])" % part
-                )
-            temp, speed = float(pieces[0]), float(pieces[1])
-            hyst = float(pieces[2]) if len(pieces) == 3 else 0.0
-            if not 0 <= speed <= 100:
-                raise ValueError("Speed must be 0-100, got %s" % speed)
-            if hyst < 0:
-                raise ValueError("Hysteresis must be >= 0, got %s" % hyst)
-            points.append((temp, speed, hyst))
-        if len(points) < 2:
-            raise ValueError("Mapping must have at least 2 points")
-        points.sort(key=lambda p: p[0])
-        return tuple(points)
-
-    @classmethod
-    def parse_spec(
-        cls, spec: str
-    ) -> tuple[MappingKey, DeviceCelsiusToFanZonePercent | None]:
-        """Parse 'gpu0-zone1=40:15,80:100' into ((device, idx, zone), mapping)."""
-        if "=" not in spec:
-            raise ValueError("Invalid mapping spec (missing '='): %s" % spec)
-        key_part, mapping_part = spec.split("=", 1)
-        mapping = cls.parse(mapping_part)
-        m = re.match(
-            r"^(cpu|gpu|ram|hdd|nvme)(\d+)?-zone(\d+)?$",
-            key_part.strip().lower(),
-        )
-        if not m:
-            raise ValueError("Invalid mapping key format: %s" % key_part)
-        return (
-            m.group(1),
-            int(m.group(2)) if m.group(2) else -1,
-            int(m.group(3)) if m.group(3) else -1,
-        ), mapping
-
-    @classmethod
     def lookup(
-        cls,
+        self,
         temp: float,
-        mapping: DeviceCelsiusToFanZonePercent,
+        mapping: tuple[MappingPoint, ...],
         active_threshold: float | None = None,
-        default_hysteresis: float = 5.0,
     ) -> tuple[float, float]:
         """Piecewise constant lookup with hysteresis.
 
@@ -212,7 +258,7 @@ class Mappings:
 
         # Falling - check if we should drop
         active_t, active_s, active_h = mapping[active_idx]
-        hyst = active_h if active_h > 0 else default_hysteresis
+        hyst = self.config.hysteresis_celsius if active_h is None else active_h
         if temp < active_t - hyst:
             # Drop to new threshold
             return normal_speed, normal_thresh
@@ -221,18 +267,453 @@ class Mappings:
             return active_s, active_t
 
 
-@dataclasses.dataclass(slots=True, kw_only=True)
-class Temps:
-    """Temperature readings in Celsius."""
+class Hardware(Protocol):
+    """Hardware interface protocol."""
 
-    cpus_celsius: list[float]
-    gpus_celsius: list[float]
-    rams_celsius: list[float]
-    hdds_celsius: list[float]
-    nvmes_celsius: list[float]
+    def initialize(self) -> bool: ...
+    def get_temps(self) -> dict[str, tuple[int, ...] | None] | None: ...
+    def get_zones(self) -> tuple[int, ...]: ...
+    def set_zone_speed(self, zone: int, percent: int) -> bool: ...
+    def set_fail_safe(self) -> bool: ...
 
 
-def _run_cmd(cmd: list[str], timeout: float) -> str | None:
+@final
+class SupermicroH13:
+    """Hardware implementation for Supermicro H13-series motherboards."""
+
+    @dataclasses.dataclass(slots=True, kw_only=True)
+    class Config:
+        """Hardware configuration (no flags currently)."""
+
+        zones: tuple[int, ...] = (0, 1)
+
+        # IPMI sensor name -> result_key
+        ipmi_sensors: dict[str, str] = dataclasses.field(
+            default_factory=lambda: {
+                "CPU Temp": "cpu",
+                "DIMMA~F Temp": "ram",
+                "DIMMG~L Temp": "ram",
+                "GPU1 Temp": "gpu_ipmi",
+                "GPU2 Temp": "gpu_ipmi",
+                "GPU3 Temp": "gpu_ipmi",
+                "GPU4 Temp": "gpu_ipmi",
+                "GPU5 Temp": "gpu_ipmi",
+                "GPU6 Temp": "gpu_ipmi",
+                "GPU7 Temp": "gpu_ipmi",
+                "GPU8 Temp": "gpu_ipmi",
+                "SOC_VRM Temp": "vrm_soc",
+                "CPU_VRM0 Temp": "vrm_cpu",
+                "CPU_VRM1 Temp": "vrm_cpu",
+                "VDDIO_VRM Temp": "vrm_vddio",
+                "System Temp": "system",
+                "Peripheral Temp": "peripheral",
+            }
+        )
+
+        def setup(self) -> SupermicroH13:
+            """Build SupermicroH13 from this config."""
+            return SupermicroH13(self)
+
+        @classmethod
+        def add_args(cls, argparser: argparse.ArgumentParser) -> None:
+            """Add hardware arguments to parser."""
+            del argparser  # unused
+
+        @classmethod
+        def from_args(
+            cls,
+            argparser: argparse.ArgumentParser,
+            args: argparse.Namespace,
+        ) -> SupermicroH13.Config:
+            """Create Config from parsed arguments."""
+            del args, argparser  # unused
+            return cls()
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.current_speeds: dict[int, int | None] = {
+            z: None for z in self.config.zones
+        }
+        self._nvidia_warned = False
+        self._hdd_devices: tuple[str, ...] = _detect_hdds()
+        self._nvme_devices: tuple[str, ...] = _detect_nvmes()
+        if self._hdd_devices:
+            log.info("HDDs: %s", ", ".join(self._hdd_devices))
+        if self._nvme_devices:
+            log.info("NVMe: %s", ", ".join(self._nvme_devices))
+
+    def initialize(self) -> bool:
+        """Initialize hardware for manual fan control. Sets BMC to full mode."""
+        return self._set_full_mode()
+
+    def get_temps(self) -> dict[str, tuple[int, ...] | None] | None:
+        """Get all temperatures. Returns None on critical failure (IPMI)."""
+        # Single IPMI call for all IPMI-based temps
+        out = _run_cmd(["ipmitool", "sensor"])
+        if out is None:
+            log.error("Failed to run ipmitool sensor")
+            return None
+
+        # Collect temps as lists first, convert to tuples at end
+        temps: dict[str, list[int]] = {
+            "cpu": [],
+            "gpu": [],
+            "gpu_ipmi": [],
+            "ram": [],
+            "hdd": [],
+            "nvme": [],
+            "vrm_soc": [],
+            "vrm_cpu": [],
+            "vrm_vddio": [],
+            "system": [],
+            "peripheral": [],
+        }
+
+        # Parse IPMI sensor output
+        for line in out.splitlines():
+            parts = line.split("|")
+            if len(parts) < 2:
+                continue
+            sensor_name = parts[0].strip()
+            if sensor_name not in self.config.ipmi_sensors:
+                continue
+            key = self.config.ipmi_sensors[sensor_name]
+            value_str = parts[1].strip()
+            try:
+                temp = self._valid_temp(float(value_str))
+                if temp is not None:
+                    temps[key].append(temp)
+            except ValueError:
+                pass  # "na" or other non-numeric
+
+        # CPU temp is required
+        if not temps["cpu"]:
+            log.error("Failed to read CPU temp from IPMI")
+            return None
+
+        # nvidia-smi for GPU temps
+        nv_out = _run_cmd(
+            [
+                "nvidia-smi",
+                "--query-gpu=temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ]
+        )
+        if nv_out is not None:
+            gpu_temps = self._parse_nvidia_temps(nv_out)
+            if gpu_temps is not None:
+                temps["gpu"] = list(gpu_temps)
+        if not temps["gpu"]:
+            # Fallback to IPMI GPU temps
+            if not self._nvidia_warned and temps["gpu_ipmi"]:
+                log.warning("nvidia-smi failed, using IPMI GPU sensors")
+                self._nvidia_warned = True
+            temps["gpu"] = temps["gpu_ipmi"].copy()
+
+        # GPU is required (either nvidia-smi or IPMI)
+        if not temps["gpu"]:
+            log.error("Failed to read GPU temps")
+            return None
+
+        # HDD and NVMe temps (optional)
+        temps["hdd"] = self._get_hdd_temps()
+        temps["nvme"] = self._get_nvme_temps()
+
+        # Convert lists to tuples, empty lists to None
+        return {k: tuple(v) if v else None for k, v in temps.items()}
+
+    def get_zones(self) -> tuple[int, ...]:
+        """Get available fan zones."""
+        return self.config.zones
+
+    def set_zone_speed(self, zone: int, percent: int) -> bool:
+        """Set fan zone speed."""
+        if self.current_speeds.get(zone) == percent:
+            return True
+        out = _run_cmd(
+            [
+                "ipmitool",
+                "raw",
+                "0x30",
+                "0x70",
+                "0x66",
+                "0x01",
+                f"0x{zone:02x}",
+                f"0x{percent:02x}",
+            ]
+        )
+        if out is not None:
+            self.current_speeds[zone] = percent
+            return True
+        log.error("Failed to set zone %d to %d%%", zone, percent)
+        return False
+
+    def set_fail_safe(self) -> bool:
+        """Set BMC to full/fail-safe mode. BMC controls fans at 100%."""
+        return self._set_full_mode()
+
+    def _valid_temp(self, value: float) -> int | None:
+        """Return value as int if in valid range (0-120C), else None."""
+        del self  # unused
+        if 0 <= value <= 120:
+            return int(value)
+        return None
+
+    def _parse_nvidia_temps(self, output: str) -> tuple[int, ...] | None:
+        """Parse nvidia-smi temperature output. Returns None if any line fails."""
+        temps: list[int] = []
+        for line in output.strip().splitlines():
+            try:
+                t = self._valid_temp(float(line.strip()))
+                if t is None:
+                    return None
+                temps.append(t)
+            except ValueError:
+                return None
+        return tuple(temps)
+
+    def _get_hdd_temps(self) -> list[int]:
+        """Get HDD temperatures via smartctl."""
+        temps: list[int] = []
+        for dev in self._hdd_devices:
+            out = _run_cmd(["smartctl", "-A", dev])
+            if out is None:
+                log.warning("Failed to read HDD temp from %s", dev)
+                continue
+            for line in out.splitlines():
+                if (
+                    "Temperature_Celsius" not in line
+                    and "Airflow_Temperature" not in line
+                ):
+                    continue
+                parts = line.split()
+                if len(parts) < 10:
+                    continue
+                try:
+                    t = self._valid_temp(float(parts[9]))
+                    if t is not None:
+                        temps.append(t)
+                except ValueError:
+                    pass
+        return temps
+
+    def _get_nvme_temps(self) -> list[int]:
+        """Get NVMe temperatures via nvme-cli."""
+        temps: list[int] = []
+        for dev in self._nvme_devices:
+            out = _run_cmd(["nvme", "smart-log", dev])
+            if out is None:
+                log.warning("Failed to read NVMe temp from %s", dev)
+                continue
+            for line in out.splitlines():
+                if not line.strip().lower().startswith("temperature"):
+                    continue
+                parts = line.split(":")
+                if len(parts) < 2:
+                    continue
+                try:
+                    t = self._valid_temp(
+                        float(parts[1].strip().split()[0].replace(",", ""))
+                    )
+                    if t is not None:
+                        temps.append(t)
+                        break
+                except (ValueError, IndexError):
+                    pass
+        return temps
+
+    def _set_full_mode(self) -> bool:
+        """Ensure BMC is in full/manual fan mode."""
+        out = _run_cmd(["ipmitool", "raw", "0x30", "0x45", "0x00"])
+        if out is None or out.strip() != "01":
+            if _run_cmd(["ipmitool", "raw", "0x30", "0x45", "0x01", "0x01"]) is None:
+                log.error("Failed to set full fan mode")
+                return False
+            time.sleep(0.5)
+        return True
+
+
+@final
+class FanDaemon:
+    """Main fan control daemon."""
+
+    @dataclasses.dataclass(slots=True, kw_only=True)
+    class Config:
+        """Daemon configuration."""
+
+        interval_seconds: float = 5.0
+        heartbeat_seconds: float = 0.0  # 0 = disabled
+
+        @classmethod
+        def add_args(cls, argparser: argparse.ArgumentParser) -> None:
+            """Add daemon configuration arguments to parser."""
+            _ = argparser.add_argument(
+                "--interval_seconds",
+                type=float,
+                default=cls.interval_seconds,
+                help="Poll interval (seconds).",
+            )
+            _ = argparser.add_argument(
+                "--heartbeat_seconds",
+                type=float,
+                default=cls.heartbeat_seconds,
+                help="Heartbeat interval (seconds). 0=disabled.",
+            )
+
+        @classmethod
+        def from_args(
+            cls,
+            argparser: argparse.ArgumentParser,
+            args: argparse.Namespace,
+        ) -> FanDaemon.Config:
+            """Create Config from parsed arguments."""
+            interval_seconds = cast(float, args.interval_seconds)
+            if interval_seconds <= 0:
+                argparser.error("--interval_seconds must be > 0")
+
+            return cls(
+                interval_seconds=interval_seconds,
+                heartbeat_seconds=cast(float, args.heartbeat_seconds),
+            )
+
+        def setup(self, hardware: Hardware, speed: FanSpeed) -> FanDaemon:
+            """Build FanDaemon from this config."""
+            return FanDaemon(self, hardware, speed)
+
+    def __init__(self, config: Config, hardware: Hardware, speed: FanSpeed):
+        self.config = config
+        self.hardware = hardware
+        self.speed = speed
+        self.running = False
+        self.active_thresholds: dict[tuple[str, int, int], float] = {}
+        self.last_logged_speeds: dict[int, int] = {}
+        self.last_heartbeat = 0.0
+
+    def run(self) -> None:
+        """Main daemon loop."""
+        _ = signal.signal(signal.SIGTERM, self.shutdown)
+        _ = signal.signal(signal.SIGINT, self.shutdown)
+
+        log.info("Starting: zones=%s", list(self.hardware.get_zones()))
+
+        if not self.hardware.initialize():
+            log.error("Failed to initialize hardware")
+
+        self.running = True
+        while self.running:
+            try:
+                self.control_loop()
+            except Exception:
+                log.exception("Control loop error")
+                _ = self.hardware.set_fail_safe()
+
+            time.sleep(self.config.interval_seconds)
+
+        _ = self.hardware.set_fail_safe()
+
+    def control_loop(self) -> None:
+        """Main control loop iteration."""
+        temps = self.hardware.get_temps()
+        if temps is None:
+            log.error("Failed to read temps, setting fail-safe")
+            _ = self.hardware.set_fail_safe()
+            self.active_thresholds.clear()
+            self.last_logged_speeds.clear()
+            return
+
+        zone_speeds = self._compute_zone_speeds(temps)
+
+        for zone, (speed, _trigger, _trigger_temp) in zone_speeds.items():
+            if not self.hardware.set_zone_speed(zone, speed):
+                _ = self.hardware.set_fail_safe()
+                self.active_thresholds.clear()
+                self.last_logged_speeds.clear()
+                return
+
+        # Check if any speeds changed
+        current_speeds = {z: spd for z, (spd, _, _) in zone_speeds.items()}
+        speeds_changed = current_speeds != self.last_logged_speeds
+
+        # Check if heartbeat is due (0 = disabled)
+        now = time.time()
+        hb = self.config.heartbeat_seconds
+        heartbeat_due = hb > 0 and (now - self.last_heartbeat) >= hb
+
+        status = self._format_status(zone_speeds, temps)
+
+        if speeds_changed:
+            log.info(status)
+            self.last_logged_speeds = current_speeds
+            self.last_heartbeat = now
+        elif heartbeat_due:
+            log.info("(heartbeat) %s", status)
+            self.last_heartbeat = now
+        else:
+            log.debug(status)
+
+    def shutdown(
+        self,
+        signum: int | None = None,
+        _frame: object = None,
+    ) -> None:
+        """Clean shutdown - set fans to fail-safe."""
+        log.info("Shutting down (signal %d)", signum or 0)
+        self.running = False
+        _ = self.hardware.set_fail_safe()
+        sys.exit(0)
+
+    def _format_status(
+        self,
+        zone_speeds: dict[int, tuple[int, str, int]],
+        temps: dict[str, tuple[int, ...] | None],
+    ) -> str:
+        """Format status line for logging."""
+        zone_parts = [
+            f"z{z}:{trig}={temp}C->{spd}%"
+            for z, (spd, trig, temp) in zone_speeds.items()
+        ]
+        temp_parts = [
+            f"{k}={'/'.join(str(t) for t in v)}" for k, v in sorted(temps.items()) if v
+        ]
+        return "%s [%s]" % (" ".join(zone_parts), " ".join(temp_parts))
+
+    def _compute_zone_speeds(
+        self,
+        temps: dict[str, tuple[int, ...] | None],
+    ) -> dict[int, tuple[int, str, int]]:
+        """Compute fan speed per zone. Returns {zone: (speed, trigger, temp)}."""
+        results: dict[int, tuple[int, str, int]] = {}
+        for zone in self.hardware.get_zones():
+            candidates: list[tuple[float, str, int, str, int, float]] = []
+            for name, values in temps.items():
+                for idx, temp in enumerate(values or ()):
+                    if (m := self.speed.get(name, idx, zone)) is not None:
+                        key = (name, idx, zone)
+                        active_thresh = self.active_thresholds.get(key)
+                        spd, new_thresh = self.speed.lookup(temp, m, active_thresh)
+                        candidates.append(
+                            (
+                                spd,
+                                "%s%d" % (name.upper(), idx),
+                                temp,
+                                name,
+                                idx,
+                                new_thresh,
+                            )
+                        )
+            if candidates:
+                spd, trigger, temp, dev_name, dev_idx, new_thresh = max(
+                    candidates, key=lambda x: x[0]
+                )
+                self.active_thresholds[(dev_name, dev_idx, zone)] = new_thresh
+                results[zone] = (int(spd), trigger, temp)
+            else:
+                # No mappings for this zone - fail-safe to 100%
+                results[zone] = (100, "none", 0)
+        return results
+
+
+def _run_cmd(cmd: list[str], timeout: float = 5.0) -> str | None:
     """Run command with timeout. Returns stdout on success, None on failure."""
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
@@ -261,631 +742,49 @@ def _detect_nvmes() -> tuple[str, ...]:
     return tuple(sorted(nvmes))
 
 
-@dataclasses.dataclass(slots=True, kw_only=True)
-class ZoneConfig:
-    """Per-zone fan configuration."""
-
-    min_speed_percent: int = 15
-    max_speed_percent: int = 100
-    speed_step_percent: int = 10
-
-
-@dataclasses.dataclass(slots=True, kw_only=True)
-class Config:
-    """Daemon configuration."""
-
-    mappings: Mappings = dataclasses.field(default_factory=Mappings)
-    zones: dict[int, ZoneConfig] = dataclasses.field(
-        default_factory=lambda: {
-            0: ZoneConfig(),
-            1: ZoneConfig(),
-        }
-    )
-    hysteresis_celsius: float = 5.0
-    interval_seconds: float = 5.0
-    gpu_slots: int = 5
-    ram_sensors: tuple[str, ...] = ("DIMMA~F Temp", "DIMMG~L Temp")
-    hdd_devices: tuple[str, ...] | None = None  # None = auto-detect
-    nvme_devices: tuple[str, ...] | None = None  # None = auto-detect
-    temp_min_valid_celsius: float = 0.0
-    temp_max_valid_celsius: float = 120.0
-    cmd_timeout_seconds: float = 5.0
-    log_level: str = "INFO"
-    heartbeat_seconds: float = 300.0  # Log status every 5 minutes even if unchanged
-
-    @classmethod
-    def from_args(cls) -> Config:
-        """Parse command-line arguments and return Config."""
-        p = argparse.ArgumentParser(
-            description="Fan daemon for server motherboards",
-            formatter_class=argparse.RawDescriptionHelpFormatter,
-            epilog="""
-Mapping format: DEVICE[N]-zone[M]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
+def main() -> None:
+    argparser = argparse.ArgumentParser(
+        description="Fan daemon for server motherboards",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Mapping format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
   HYST is optional per-point hysteresis (default: --hysteresis value).
   Hysteresis prevents oscillation: fans stay high until temp drops HYST below threshold.
 
   Examples:
-    --mapping gpu-zone=50:15,85:100       All GPUs, all zones
+    --mapping gpu=50:15,85:100            All GPUs, all zones
     --mapping gpu-zone0=50:15,85:100      All GPUs, zone 0 only
     --mapping gpu0-zone1=60:20,85:100     GPU #0, zone 1 only
-    --mapping gpu-zone=50:15:3,70:50:5    Custom hysteresis per point
-    --mapping hdd-zone=                   Disable HDD mappings
+    --mapping gpu=50:15:3,70:50:5         Custom hysteresis per point
+    --mapping hdd=                        Disable HDD mappings
 
   Precedence (most specific wins):
-    gpu0-zone0 > gpu0-zone > gpu-zone0 > gpu-zone > default
+    gpu0-zone0 > gpu0-zone > gpu-zone0 > gpu > default
 """,
-        )
-        dz = ZoneConfig()
-        _ = p.add_argument(
-            "--mapping",
-            action="append",
-            metavar="SPEC",
-            help="Mapping spec. Repeatable.",
-        )
-        _ = p.add_argument(
-            "--min-speed",
-            type=int,
-            default=dz.min_speed_percent,
-            help="Min fan speed %%.",
-        )
-        _ = p.add_argument(
-            "--max-speed",
-            type=int,
-            default=dz.max_speed_percent,
-            help="Max fan speed %%.",
-        )
-        _ = p.add_argument(
-            "--speed-step",
-            type=int,
-            default=dz.speed_step_percent,
-            help="Speed step %%.",
-        )
-        _ = p.add_argument(
-            "--hysteresis",
-            type=float,
-            default=5.0,
-            help="Default hysteresis (°C) for falling temps.",
-        )
-        _ = p.add_argument(
-            "--interval",
-            type=float,
-            default=5.0,
-            help="Poll interval (seconds).",
-        )
-        _ = p.add_argument(
-            "--gpu-slots",
-            type=int,
-            default=5,
-            help="PCIe GPU slots for IPMI fallback.",
-        )
-        _ = p.add_argument(
-            "--hdd-devices",
-            type=str,
-            default="",
-            help="Comma-separated HDD paths.",
-        )
-        _ = p.add_argument(
-            "--nvme-devices",
-            type=str,
-            default="",
-            help="Comma-separated NVMe paths.",
-        )
-        _ = p.add_argument(
-            "--log-level",
-            type=str,
-            choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-            default="INFO",
-            help="Log level.",
-        )
-        _ = p.add_argument(
-            "--heartbeat",
-            type=float,
-            default=300.0,
-            help="Heartbeat log interval (seconds).",
-        )
-        args = p.parse_args()
-        min_speed = cast(int, args.min_speed)
-        max_speed = cast(int, args.max_speed)
-        interval = cast(float, args.interval)
-        heartbeat = cast(float, args.heartbeat)
-        if min_speed >= max_speed:
-            p.error("--min-speed must be less than --max-speed")
-        if interval <= 0:
-            p.error("--interval must be > 0")
-        if heartbeat <= 0:
-            p.error("--heartbeat must be > 0")
-        user_mappings: dict[MappingKey, DeviceCelsiusToFanZonePercent | None] = {}
-        for spec in cast(list[str], args.mapping or []):
-            try:
-                key, mapping = Mappings.parse_spec(spec)
-                user_mappings[key] = mapping
-            except ValueError as e:
-                p.error(str(e))
-        hdd_str = cast(str, args.hdd_devices)
-        nvme_str = cast(str, args.nvme_devices)
-        hdd: tuple[str, ...] | None = None  # auto-detect
-        nvme: tuple[str, ...] | None = None  # auto-detect
-        if hdd_str:
-            hdd = tuple(x.strip() for x in hdd_str.split(",") if x.strip())
-        if nvme_str:
-            nvme = tuple(x.strip() for x in nvme_str.split(",") if x.strip())
-        speed_step = cast(int, args.speed_step)
-        hysteresis = cast(float, args.hysteresis)
-        gpu_slots = cast(int, args.gpu_slots)
-        log_level = cast(str, args.log_level)
-        zones = {
-            z: ZoneConfig(
-                min_speed_percent=min_speed,
-                max_speed_percent=max_speed,
-                speed_step_percent=speed_step,
-            )
-            for z in (0, 1)
-        }
-        return cls(
-            mappings=Mappings(user_mappings),
-            zones=zones,
-            hysteresis_celsius=hysteresis,
-            interval_seconds=interval,
-            gpu_slots=gpu_slots,
-            hdd_devices=hdd,
-            nvme_devices=nvme,
-            log_level=log_level,
-            heartbeat_seconds=heartbeat,
-        )
+    )
+    FanSpeed.Config.add_args(argparser)
+    SupermicroH13.Config.add_args(argparser)
+    FanDaemon.Config.add_args(argparser)
+    _ = argparser.add_argument(
+        "--log-level",
+        type=str,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Log level.",
+    )
+    args = argparser.parse_args()
 
+    # Configure logging first, before any setup functions run
+    level = cast(int, getattr(logging, cast(str, args.log_level)))
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s: %(message)s",
+        datefmt="%y-%m-%d %H:%M:%S",
+    )
 
-class Hardware(Protocol):
-    """Hardware interface protocol."""
-
-    def get_cpu_temps(self) -> list[float] | None: ...
-    def get_gpu_temps(self) -> list[float] | None: ...
-    def get_ram_temps(self) -> list[float] | None: ...
-    def get_hdd_temps(self) -> list[float] | None: ...
-    def get_nvme_temps(self) -> list[float] | None: ...
-    def set_zone_speed(self, zone: int, percent: int) -> bool: ...
-    def set_full_speed(self) -> bool: ...
-    def detect_gpus(self) -> int: ...
-
-
-class Supermicro:
-    """Hardware implementation for Supermicro motherboards."""
-
-    config: Config
-    current_speeds: dict[int, int | None]
-    _nvidia_warned: bool
-
-    _hdd_devices: tuple[str, ...]
-    _nvme_devices: tuple[str, ...]
-
-    def __init__(self, config: Config) -> None:
-        self.config = config
-        self.current_speeds = {z: None for z in config.zones}
-        self._nvidia_warned = False
-        self._hdd_devices = (
-            config.hdd_devices if config.hdd_devices is not None else _detect_hdds()
-        )
-        self._nvme_devices = (
-            config.nvme_devices if config.nvme_devices is not None else _detect_nvmes()
-        )
-        if self._hdd_devices:
-            log.info("HDDs: %s", ", ".join(self._hdd_devices))
-        if self._nvme_devices:
-            log.info("NVMe: %s", ", ".join(self._nvme_devices))
-
-    def get_cpu_temps(self) -> list[float] | None:
-        """Get CPU temperatures via IPMI."""
-        out = _run_cmd(
-            ["ipmitool", "sdr", "get", "CPU Temp"],
-            self.config.cmd_timeout_seconds,
-        )
-        if out is None:
-            log.error("Failed to read CPU Temp")
-            return None
-        temp = self._parse_ipmi_temp(out)
-        if temp is None:
-            log.error("Failed to parse CPU Temp")
-            return None
-        return [temp]
-
-    def get_gpu_temps(self) -> list[float] | None:
-        """Get GPU temps via nvidia-smi, falling back to IPMI."""
-        out = _run_cmd(
-            [
-                "nvidia-smi",
-                "--query-gpu=temperature.gpu",
-                "--format=csv,noheader,nounits",
-            ],
-            self.config.cmd_timeout_seconds,
-        )
-        if out is not None:
-            temps = self._parse_nvidia_temps(out)
-            if temps is not None:
-                return temps
-        if not self._nvidia_warned:
-            log.warning("nvidia-smi failed, using IPMI GPU sensors")
-            self._nvidia_warned = True
-        return self._get_gpu_temps_ipmi()
-
-    def get_ram_temps(self) -> list[float] | None:
-        """Get RAM temps via IPMI."""
-        temps: list[float] = []
-        for sensor in self.config.ram_sensors:
-            out = _run_cmd(
-                ["ipmitool", "sdr", "get", sensor],
-                self.config.cmd_timeout_seconds,
-            )
-            if out is None:
-                continue
-            t = self._parse_ipmi_temp(out)
-            if t is not None:
-                temps.append(t)
-        return temps
-
-    def get_hdd_temps(self) -> list[float] | None:
-        """Get HDD temps via smartctl."""
-        temps: list[float] = []
-        for dev in self._hdd_devices:
-            out = _run_cmd(
-                ["smartctl", "-A", dev],
-                self.config.cmd_timeout_seconds,
-            )
-            if out is None:
-                log.warning("Failed to read HDD temp from %s", dev)
-                continue
-            for line in out.splitlines():
-                if (
-                    "Temperature_Celsius" not in line
-                    and "Airflow_Temperature" not in line
-                ):
-                    continue
-                parts = line.split()
-                if len(parts) < 10:
-                    continue
-                try:
-                    t = self._valid_temp(float(parts[9]))
-                    if t is not None:
-                        temps.append(t)
-                except ValueError:
-                    pass
-        return temps
-
-    def get_nvme_temps(self) -> list[float] | None:
-        """Get NVMe temps via nvme-cli."""
-        temps: list[float] = []
-        for dev in self._nvme_devices:
-            out = _run_cmd(
-                ["nvme", "smart-log", dev],
-                self.config.cmd_timeout_seconds,
-            )
-            if out is None:
-                log.warning("Failed to read NVMe temp from %s", dev)
-                continue
-            for line in out.splitlines():
-                if not line.strip().lower().startswith("temperature"):
-                    continue
-                parts = line.split(":")
-                if len(parts) < 2:
-                    continue
-                try:
-                    t = self._valid_temp(
-                        float(parts[1].strip().split()[0].replace(",", ""))
-                    )
-                    if t is not None:
-                        temps.append(t)
-                        break
-                except (ValueError, IndexError):
-                    pass
-        return temps
-
-    def set_zone_speed(self, zone: int, percent: int) -> bool:
-        """Set fan zone speed."""
-        zc = self.config.zones.get(zone)
-        if zc is not None:
-            percent = max(zc.min_speed_percent, min(zc.max_speed_percent, percent))
-        if self.current_speeds.get(zone) == percent:
-            return True
-        if not self._ensure_full_mode():
-            return False
-        out = _run_cmd(
-            [
-                "ipmitool",
-                "raw",
-                "0x30",
-                "0x70",
-                "0x66",
-                "0x01",
-                f"0x{zone:02x}",
-                f"0x{percent:02x}",
-            ],
-            self.config.cmd_timeout_seconds,
-        )
-        if out is not None:
-            self.current_speeds[zone] = percent
-            return True
-        log.error("Failed to set zone %d to %d%%", zone, percent)
-        return False
-
-    def set_full_speed(self) -> bool:
-        """Set all zones to 100%."""
-        results = [self.set_zone_speed(z, 100) for z in self.config.zones]
-        return all(results)
-
-    def detect_gpus(self) -> int:
-        """Detect GPU count."""
-        temps = self.get_gpu_temps()
-        return len(temps) if temps else 0
-
-    def _valid_temp(self, value: float) -> float | None:
-        """Return value if in valid range, else None."""
-        if (
-            self.config.temp_min_valid_celsius
-            <= value
-            <= self.config.temp_max_valid_celsius
-        ):
-            return value
-        return None
-
-    def _parse_ipmi_temp(self, output: str) -> float | None:
-        """Parse IPMI sensor output for temperature reading."""
-        for line in output.splitlines():
-            if "Sensor Reading" not in line:
-                continue
-            parts = line.split(":")
-            if len(parts) < 2:
-                continue
-            try:
-                return self._valid_temp(float(parts[1].strip().split()[0]))
-            except (ValueError, IndexError):
-                pass
-        return None
-
-    def _parse_nvidia_temps(self, output: str) -> list[float] | None:
-        """Parse nvidia-smi temperature output. Returns None if any line fails."""
-        temps: list[float] = []
-        for line in output.strip().splitlines():
-            try:
-                t = self._valid_temp(float(line.strip()))
-                if t is None:
-                    return None
-                temps.append(t)
-            except ValueError:
-                return None
-        return temps
-
-    def _get_gpu_temps_ipmi(self) -> list[float] | None:
-        """Get GPU temps via IPMI sensors."""
-        temps: list[float] = []
-        any_ok = False
-        for i in range(1, self.config.gpu_slots + 1):
-            out = _run_cmd(
-                ["ipmitool", "sdr", "get", "GPU%d Temp" % i],
-                self.config.cmd_timeout_seconds,
-            )
-            if out is None:
-                continue
-            any_ok = True
-            t = self._parse_ipmi_temp(out)
-            if t is not None:
-                temps.append(t)
-        return temps if any_ok else None
-
-    def _ensure_full_mode(self) -> bool:
-        """Ensure BMC is in full/manual fan mode."""
-        timeout = self.config.cmd_timeout_seconds
-        out = _run_cmd(
-            ["ipmitool", "raw", "0x30", "0x45", "0x00"],
-            timeout,
-        )
-        if out is None or out.strip() != "01":
-            if (
-                _run_cmd(
-                    ["ipmitool", "raw", "0x30", "0x45", "0x01", "0x01"],
-                    timeout,
-                )
-                is None
-            ):
-                log.error("Failed to set full fan mode")
-                return False
-            time.sleep(0.5)
-        return True
-
-
-class FanDaemon:
-    """Main fan control daemon."""
-
-    config: Config
-    hardware: Hardware
-    running: bool
-    # Maps (device_type, device_idx, zone) -> active threshold temperature
-    active_thresholds: dict[tuple[str, int, int], float]
-    # Track last logged speeds for change detection
-    last_logged_speeds: dict[int, int]
-    last_heartbeat: float
-
-    def __init__(self, config: Config, hardware: Hardware) -> None:
-        self.config = config
-        self.hardware = hardware
-        self.running = False
-        self.active_thresholds = {}
-        self.last_logged_speeds = {}
-        self.last_heartbeat = 0.0
-
-    @staticmethod
-    def _quantize_speed(speed: float, step: int) -> int:
-        """Quantize speed to discrete steps."""
-        return int(round(speed / step) * step)
-
-    def get_all_temps(self) -> Temps | None:
-        """Get all temperatures. Returns None if CPU or GPU fails."""
-        cpus = self.hardware.get_cpu_temps()
-        if cpus is None:
-            return None
-        gpus = self.hardware.get_gpu_temps()
-        if gpus is None:
-            return None
-        # RAM/HDD/NVMe are optional - empty list is fine
-        return Temps(
-            cpus_celsius=cpus,
-            gpus_celsius=gpus,
-            rams_celsius=self.hardware.get_ram_temps() or [],
-            hdds_celsius=self.hardware.get_hdd_temps() or [],
-            nvmes_celsius=self.hardware.get_nvme_temps() or [],
-        )
-
-    def compute_zone_speeds(
-        self,
-        temps: Temps,
-    ) -> dict[int, tuple[int, str, float]]:
-        """Compute fan speed per zone. Returns {zone: (speed, trigger, temp)}."""
-        cfg = self.config
-        device_temps = [
-            ("cpu", temps.cpus_celsius),
-            ("gpu", temps.gpus_celsius),
-            ("ram", temps.rams_celsius),
-            ("hdd", temps.hdds_celsius),
-            ("nvme", temps.nvmes_celsius),
-        ]
-        results: dict[int, tuple[int, str, float]] = {}
-        for zone, zc in cfg.zones.items():
-            candidates: list[tuple[float, str, float, str, int, float]] = []
-            for name, temp_list in device_temps:
-                for idx, temp in enumerate(temp_list):
-                    if (m := cfg.mappings.get(name, idx, zone)) is not None:
-                        key = (name, idx, zone)
-                        active_thresh = self.active_thresholds.get(key)
-                        speed, new_thresh = Mappings.lookup(
-                            temp, m, active_thresh, cfg.hysteresis_celsius
-                        )
-                        candidates.append(
-                            (
-                                speed,
-                                "%s%d" % (name.upper(), idx),
-                                temp,
-                                name,
-                                idx,
-                                new_thresh,
-                            )
-                        )
-            if candidates:
-                raw_speed, trigger, temp, dev_name, dev_idx, new_thresh = max(
-                    candidates, key=lambda x: x[0]
-                )
-                # Update active threshold for the winning device
-                self.active_thresholds[(dev_name, dev_idx, zone)] = new_thresh
-                speed = max(
-                    zc.min_speed_percent,
-                    min(
-                        zc.max_speed_percent,
-                        self._quantize_speed(raw_speed, zc.speed_step_percent),
-                    ),
-                )
-                results[zone] = (speed, trigger, temp)
-            else:
-                results[zone] = (zc.min_speed_percent, "none", 0.0)
-        return results
-
-    def _format_status(
-        self,
-        zone_speeds: dict[int, tuple[int, str, float]],
-        temps: Temps,
-    ) -> str:
-        """Format status line for logging."""
-        parts = [
-            f"z{z}:{trig}={temp:.0f}C->{spd}%"
-            for z, (spd, trig, temp) in zone_speeds.items()
-        ]
-        return "%s [cpu=%s gpu=%s ram=%s hdd=%s nvme=%s]" % (
-            " ".join(parts),
-            "/".join(f"{t:.0f}" for t in temps.cpus_celsius) or "-",
-            "/".join(f"{t:.0f}" for t in temps.gpus_celsius) or "-",
-            "/".join(f"{t:.0f}" for t in temps.rams_celsius) or "-",
-            "/".join(f"{t:.0f}" for t in temps.hdds_celsius) or "-",
-            "/".join(f"{t:.0f}" for t in temps.nvmes_celsius) or "-",
-        )
-
-    def control_loop(self) -> None:
-        """Main control loop iteration."""
-        temps = self.get_all_temps()
-        if temps is None:
-            log.error("Failed to read temps, going to full speed")
-            _ = self.hardware.set_full_speed()
-            self.active_thresholds.clear()
-            self.last_logged_speeds.clear()
-            return
-
-        zone_speeds = self.compute_zone_speeds(temps)
-
-        for zone, (speed, _trigger, _trigger_temp) in zone_speeds.items():
-            if not self.hardware.set_zone_speed(zone, speed):
-                _ = self.hardware.set_full_speed()
-                self.active_thresholds.clear()
-                self.last_logged_speeds.clear()
-                return
-
-        # Check if any speeds changed
-        current_speeds = {z: spd for z, (spd, _, _) in zone_speeds.items()}
-        speeds_changed = current_speeds != self.last_logged_speeds
-
-        # Check if heartbeat is due
-        now = time.time()
-        heartbeat_due = (now - self.last_heartbeat) >= self.config.heartbeat_seconds
-
-        status = self._format_status(zone_speeds, temps)
-
-        if speeds_changed:
-            log.info(status)
-            self.last_logged_speeds = current_speeds
-            self.last_heartbeat = now
-        elif heartbeat_due:
-            log.info("(heartbeat) %s", status)
-            self.last_heartbeat = now
-        else:
-            log.debug(status)
-
-    def shutdown(
-        self,
-        signum: int | None = None,
-        _frame: object = None,
-    ) -> None:
-        """Clean shutdown - set fans to full."""
-        log.info("Shutting down (signal %d)", signum or 0)
-        self.running = False
-        _ = self.hardware.set_full_speed()
-        sys.exit(0)
-
-    def run(self) -> None:
-        """Main daemon loop."""
-        _ = signal.signal(signal.SIGTERM, self.shutdown)
-        _ = signal.signal(signal.SIGINT, self.shutdown)
-
-        cfg = self.config
-        log.info(
-            "Starting: zones=%s gpus=%d",
-            list(cfg.zones.keys()),
-            self.hardware.detect_gpus(),
-        )
-
-        if not self.hardware.set_full_speed():
-            log.error("Failed to set initial fan speed")
-
-        self.running = True
-        while self.running:
-            try:
-                self.control_loop()
-            except Exception:
-                log.exception("Control loop error")
-                _ = self.hardware.set_full_speed()
-
-            time.sleep(cfg.interval_seconds)
-
-        _ = self.hardware.set_full_speed()
-
-
-def main() -> None:
-    config = Config.from_args()
-    level = cast(int, getattr(logging, config.log_level))
-    logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
-    daemon = FanDaemon(config, Supermicro(config))
+    fan_speed = FanSpeed.Config.from_args(argparser, args).setup()
+    hardware = SupermicroH13.Config.from_args(argparser, args).setup()
+    daemon = FanDaemon.Config.from_args(argparser, args).setup(hardware, fan_speed)
     daemon.run()
 
 
