@@ -2,9 +2,10 @@
 # Install/uninstall fan-daemon systemd service
 #
 # Usage:
-#   ./install-fan-daemon.sh install
-#   ./install-fan-daemon.sh uninstall
-#   ./install-fan-daemon.sh status
+#   ./setup-fan-daemon.sh install      # Copy daemon to /usr/local/bin (production)
+#   ./setup-fan-daemon.sh install-dev  # Symlink daemon (development)
+#   ./setup-fan-daemon.sh uninstall
+#   ./setup-fan-daemon.sh status
 #
 # Customizing the daemon:
 #   View available options:
@@ -24,7 +25,9 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 DAEMON_INSTALL_PATH="/usr/local/bin/fan-daemon.py"
 
 usage() {
-    echo "Usage: $0 {install|uninstall|status}"
+    echo "Usage: $0 {install|install-dev|uninstall|status}"
+    echo "  install      Copy daemon to /usr/local/bin (production)"
+    echo "  install-dev  Symlink daemon (development - edits are live)"
     exit 1
 }
 
@@ -35,16 +38,19 @@ check_root() {
     fi
 }
 
-do_install() {
-    check_root
-    echo "Installing fan-daemon..."
-
-    # Copy daemon script (remove first in case of symlink)
+install_daemon_copy() {
     rm -f "$DAEMON_INSTALL_PATH"
-    cp "$SCRIPT_DIR/fan-daemon.py" "$DAEMON_INSTALL_PATH"
-    chmod +x "$DAEMON_INSTALL_PATH"
-    echo "  Installed $DAEMON_INSTALL_PATH"
+    install -m755 "$SCRIPT_DIR/fan-daemon.py" "$DAEMON_INSTALL_PATH"
+    echo "  Copied $DAEMON_INSTALL_PATH"
+}
 
+install_daemon_symlink() {
+    rm -f "$DAEMON_INSTALL_PATH"
+    ln -s "$SCRIPT_DIR/fan-daemon.py" "$DAEMON_INSTALL_PATH"
+    echo "  Symlinked $DAEMON_INSTALL_PATH -> $SCRIPT_DIR/fan-daemon.py"
+}
+
+install_service() {
     # Create service file
     cat > "$SERVICE_FILE" << 'EOF'
 [Unit]
@@ -95,6 +101,20 @@ EOF
     echo "  Config: sudo systemctl edit $SERVICE_NAME --full"
 }
 
+do_install() {
+    check_root
+    echo "Installing fan-daemon..."
+    install_daemon_copy
+    install_service
+}
+
+do_install_dev() {
+    check_root
+    echo "Installing fan-daemon (dev mode)..."
+    install_daemon_symlink
+    install_service
+}
+
 do_uninstall() {
     check_root
     echo "Uninstalling fan-daemon..."
@@ -116,7 +136,8 @@ do_uninstall() {
         echo "  Removed $SERVICE_FILE"
     fi
 
-    if [ -f "$DAEMON_INSTALL_PATH" ]; then
+    # Handle both regular files and symlinks
+    if [ -e "$DAEMON_INSTALL_PATH" ] || [ -L "$DAEMON_INSTALL_PATH" ]; then
         rm "$DAEMON_INSTALL_PATH"
         echo "  Removed $DAEMON_INSTALL_PATH"
     fi
@@ -160,6 +181,9 @@ do_status() {
 case "${1:-}" in
     install)
         do_install
+        ;;
+    install-dev)
+        do_install_dev
         ;;
     uninstall)
         do_uninstall

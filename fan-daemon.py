@@ -668,15 +668,61 @@ class FanDaemon:
         zone_speeds: dict[int, tuple[int, str, int]],
         temps: dict[str, tuple[int, ...] | None],
     ) -> str:
-        """Format status line for logging."""
-        zone_parts = [
-            f"z{z}:{trig}={temp}C->{spd}%"
-            for z, (spd, trig, temp) in zone_speeds.items()
-        ]
-        temp_parts = [
-            f"{k}={'/'.join(str(t) for t in v)}" for k, v in sorted(temps.items()) if v
-        ]
-        return "%s [%s]" % (" ".join(zone_parts), " ".join(temp_parts))
+        """Format multiline status for logging."""
+        lines: list[str] = []
+        zones = sorted(self.hardware.get_zones())
+
+        # First line: zone speeds
+        zone_parts = [f"z{z}={spd}%" for z, (spd, _, _) in sorted(zone_speeds.items())]
+        lines.append(" ".join(zone_parts))
+
+        # Find winners for each zone (e.g., {0: "RAM0", 1: "GPU0"})
+        winners: dict[int, str] = {z: trig for z, (_, trig, _) in zone_speeds.items()}
+
+        # Collect all device names for alignment
+        all_names: list[str] = []
+        for name, values in temps.items():
+            for idx in range(len(values or ())):
+                all_names.append(f"{name}{idx}")
+        max_name_len = max((len(n) for n in all_names), default=10)
+
+        # Compute max zone string length for alignment
+        # e.g., "z0:25%  z1:35%" - need to know width of each zone column
+        zone_col_width = 7  # "z0:100%" = 7 chars
+
+        # Format each device
+        for name, values in sorted(temps.items()):
+            for idx, temp in enumerate(values or ()):
+                device_name = f"{name}{idx}"
+                device_tag = f"{name.upper()}{idx}"
+
+                # Get zone speeds from curves
+                zone_strs: list[str] = []
+                for zone in zones:
+                    mapping = self.speed.get(name, idx, zone)
+                    if mapping is not None:
+                        active_thresh = self.active_thresholds.get((name, idx, zone))
+                        spd, _ = self.speed.lookup(temp, mapping, active_thresh)
+                        zone_strs.append(f"z{zone}:{int(spd)}%")
+                    else:
+                        zone_strs.append("")  # No curve for this zone
+
+                # Check if this device is a winner for any zone
+                winner_zones = [z for z, w in winners.items() if w == device_tag]
+                winner_marker = ""
+                if winner_zones:
+                    winner_marker = "  <-- " + ",".join(f"z{z}" for z in winner_zones)
+
+                # Format the line with alignment
+                zone_str = "  ".join(f"{s:<{zone_col_width}}" for s in zone_strs)
+                zone_str = zone_str.rstrip()
+                line = f"      {device_name:<{max_name_len}}  {temp:>3}C"
+                if zone_str:
+                    line += f"  {zone_str}"
+                line += winner_marker
+                lines.append(line)
+
+        return "\n".join(lines)
 
     def _compute_zone_speeds(
         self,
@@ -779,8 +825,7 @@ Mapping format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
     level = cast(int, getattr(logging, cast(str, args.log_level)))
     logging.basicConfig(
         level=level,
-        format="%(asctime)s %(levelname)s: %(message)s",
-        datefmt="%y-%m-%d %H:%M:%S",
+        format="%(levelname)s: %(message)s",
     )
 
     daemon = FanDaemon.Config.from_args(argparser, args).setup(

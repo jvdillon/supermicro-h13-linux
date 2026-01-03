@@ -765,10 +765,17 @@ class TestFanDaemonLifecycle:
         temps = {"cpu": (45,), "gpu": (70,), "ram": None}
 
         status = daemon._format_status(zone_speeds, temps)
-        assert "z0:GPU0=70C->50%" in status
-        assert "z1:CPU0=45C->30%" in status
-        assert "cpu=45" in status
-        assert "gpu=70" in status
+        # Check zone summary line
+        assert "z0=50%" in status
+        assert "z1=30%" in status
+        # Check device lines with temps
+        assert "cpu0" in status
+        assert "45C" in status
+        assert "gpu0" in status
+        assert "70C" in status
+        # Check winner markers
+        assert "<-- z0" in status
+        assert "<-- z1" in status
 
     def test_heartbeat_logging(self) -> None:
         hardware = MockHardware()
