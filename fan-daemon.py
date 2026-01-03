@@ -690,10 +690,9 @@ class FanDaemon:
         ]
         lines.append(" ".join(zone_parts))
 
-        # Find winners for each zone (e.g., {0: ("RAM0", False), 1: ("GPU0", True)})
-        # is_wildcard indicates if the winning curve was zone-agnostic
-        winners: dict[int, tuple[str, bool]] = {
-            z: (trig, is_wild) for z, (_, trig, _, is_wild) in zone_speeds.items()
+        # Find winners for each zone (e.g., {0: "RAM0", 1: "GPU0"})
+        winners: dict[int, str] = {
+            z: trig for z, (_, trig, _, _) in zone_speeds.items()
         }
 
         # Collect all device names for alignment
@@ -755,15 +754,10 @@ class FanDaemon:
                 zone_str = "  ".join(parts)
 
             # Check if this device is a winner for any zone
-            winner_zones = [z for z, (w, _) in winners.items() if w == device_tag]
+            winner_zones = [z for z, w in winners.items() if w == device_tag]
             winner_marker = ""
             if winner_zones:
-                # Check if all winning zones are from wildcard
-                all_wildcard = all(winners[z][1] for z in winner_zones)
-                if all_wildcard and len(winner_zones) == len(zones):
-                    winner_marker = "  <-- z*"
-                else:
-                    winner_marker = "  <-- " + ",".join(f"z{z}" for z in winner_zones)
+                winner_marker = "  <-- " + ",".join(f"z{z}" for z in winner_zones)
 
             # Format the line with alignment
             line = f"      {device_name:<{max_name_len}}  {temp:>3}C"
