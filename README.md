@@ -229,6 +229,11 @@ The key difference is zone overlap: our GPUs drive both case fans (zone 0, gentl
 and GPU-specific fans (zone 1, aggressive curve) simultaneously. smfc's architecture
 requires one controller per zone with no overlap.
 
+We use IPMI for CPU temps rather than kernel modules (coretemp/k10temp) because on server
+boards the BMC is the authority—it has dedicated hardware with manufacturer-calibrated
+sensors, exposes temps that kernel modules can't see (RAM, VRM, peripheral), and is the
+same interface the BMC uses for its own fan control.
+
 The code uses a `Hardware` protocol, so adding support for other motherboards is
 straightforward—just implement the interface (`get_temps`, `set_zone_speed`, etc.).
 
