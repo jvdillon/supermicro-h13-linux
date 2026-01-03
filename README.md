@@ -208,6 +208,30 @@ ipmitool raw 0x30 0x70 0x66 0x01 0x01 0x28  # Zone 1 to 40%
 
 Should work on other H13-series boards with similar BMC firmware.
 
+## Why Not smfc?
+
+[smfc](https://github.com/petersulyok/smfc) is a mature fan control solution for Supermicro boards.
+We wrote our own because of architectural differences:
+
+| Feature | fan-daemon | smfc |
+|---------|------------|------|
+| Complexity | ~850 lines, single file | ~3500 lines, multiple modules |
+| Hardware abstraction | `Hardware` protocol for easy porting | Supermicro-specific |
+| Zone overlap | One device can drive multiple zones | Each controller owns one zone, no overlap |
+| Curves | Piecewise-constant with arbitrary breakpoints | Linear min/max interpolation |
+| Config | CLI flags with sensible defaults | INI config file required |
+| CPU temp | IPMI sensor | Kernel modules (coretemp/k10temp) |
+| GPU temp | nvidia-smi with IPMI fallback | nvidia-smi only |
+| Python | Typed (passes pyright strict) | Untyped |
+| Dependencies | ipmitool (smartctl/nvme-cli optional) | Kernel modules required |
+
+The key difference is zone overlap: our GPUs drive both case fans (zone 0, gentle curve)
+and GPU-specific fans (zone 1, aggressive curve) simultaneously. smfc's architecture
+requires one controller per zone with no overlap.
+
+The code uses a `Hardware` protocol, so adding support for other motherboards is
+straightforward—just implement the interface (`get_temps`, `set_zone_speed`, etc.).
+
 ## Acknowledgments
 
 IPMI raw commands derived from [smfc](https://github.com/petersulyok/smfc).
