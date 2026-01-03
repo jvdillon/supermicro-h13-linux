@@ -1,3 +1,5 @@
-.coverage
-**/__pycache__
 **/*.pyc
+**/__pycache__
+.coverage
+.pytest_cache/
+.ruff_cache/
