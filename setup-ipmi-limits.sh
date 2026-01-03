@@ -89,8 +89,8 @@ done
 # =============================================================================
 #
 # GPU Temperature Thresholds
-# NVIDIA RTX 5090 thermal limits (per nvidia-smi, dynamic based on power headroom):
-#   Throttle begins: ~87-89C
+# NVIDIA RTX 5090 thermal limits:
+#   Throttle begins: 90C (up from 83C on RTX 40-series)
 #   Hardware shutdown: ~92C
 # IPMI reads GPU temp via SMBus external thermal diode (may differ ~3C from nvidia-smi)
 #
