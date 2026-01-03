@@ -47,12 +47,19 @@ do_install() {
     # Create service file
     cat > "$SERVICE_FILE" << 'EOF'
 [Unit]
-Description=PID Fan Control Daemon
+Description=Fan Control Daemon
 After=network.target
 
 [Service]
 Type=simple
+
+# Add flags here. Run "fan-daemon.py --help" for options. Examples:
+#   --interval 10              Poll every 10 seconds (default: 5)
+#   --hysteresis 3             3C hysteresis (default: 5)
+#   --log-level DEBUG          Verbose logging
+#   --mapping gpu-zone1=50:30,70:100   Custom GPU curve for zone 1
 ExecStart=/usr/bin/python3 /usr/local/bin/fan-daemon.py
+
 Restart=on-failure
 RestartSec=5
 
@@ -82,7 +89,9 @@ EOF
     echo "  Started $SERVICE_NAME"
 
     echo ""
-    echo "Done. View logs with: journalctl -u $SERVICE_NAME -f"
+    echo "Done."
+    echo "  Logs:   journalctl -u $SERVICE_NAME -f"
+    echo "  Config: sudo systemctl edit $SERVICE_NAME --full"
 }
 
 do_uninstall() {
