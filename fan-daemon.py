@@ -15,10 +15,11 @@ Monitor logs:
 
 Dependencies:
     sudo apt install ipmitool smartmontools nvme-cli nvidia-open
-    # ipmitool      - IPMI fan control and CPU/RAM temp monitoring
+    # ipmitool      - IPMI fan control + RAM/VRM temp monitoring
     # smartmontools - HDD temperature monitoring via smartctl (optional)
     # nvme-cli      - NVMe temperature monitoring (optional)
     # nvidia-open   - nvidia-smi (+driver) for GPU temp monitoring (optional)
+    # k10temp       - AMD CPU temp via hwmon (kernel module, usually built-in)
 """
 
 from __future__ import annotations
@@ -26,13 +27,14 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import logging
-import pathlib
 import re
 import signal
-import subprocess
 import sys
 import time
 from typing import Protocol, cast, final
+
+import sensors
+from sensors import run_cmd
 
 log = logging.getLogger("fan-daemon")
 
@@ -58,14 +60,19 @@ class SupermicroH13:
 
     @dataclasses.dataclass(slots=True, kw_only=True)
     class Config:
-        """Hardware configuration (no flags currently)."""
+        """Hardware configuration."""
 
         zones: tuple[int, ...] = (0, 1)
+        ipmi_write_delay_seconds: float = 2.0
+        ipmi_ready_timeout_seconds: float = 120.0
+        ipmi_ready_retry_seconds: float = 5.0
+        ipmi_temps: bool = False  # Use ipmitool for RAM/VRM temps
 
         # IPMI sensor name -> result_key
+        # Keys that duplicate other sensors get _ipmi suffix
         ipmi_sensors: dict[str, str] = dataclasses.field(
             default_factory=lambda: {
-                "CPU Temp": "cpu",
+                "CPU Temp": "cpu_ipmi",
                 "DIMMA~F Temp": "ram",
                 "DIMMG~L Temp": "ram",
                 "GPU1 Temp": "gpu_ipmi",
@@ -92,7 +99,11 @@ class SupermicroH13:
         @classmethod
         def add_args(cls, argparser: argparse.ArgumentParser) -> None:
             """Add hardware arguments to parser."""
-            del argparser  # unused
+            _ = argparser.add_argument(
+                "--ipmi-temps",
+                action="store_true",
+                help="Read RAM/VRM temps via ipmitool (slower, more BMC traffic).",
+            )
 
         @classmethod
         def from_args(
@@ -101,112 +112,76 @@ class SupermicroH13:
             args: argparse.Namespace,
         ) -> SupermicroH13.Config:
             """Create Config from parsed arguments."""
-            del args, argparser  # unused
-            return cls()
+            del argparser  # unused
+            return cls(ipmi_temps=cast(bool, args.ipmi_temps))
 
     def __init__(self, config: Config):
         self.config = config
-        self.current_speeds: dict[int, int | None] = {
-            z: None for z in self.config.zones
-        }
-        self._nvidia_warned = False
-        self._hdd_devices: tuple[str, ...] = _detect_hdds()
-        self._nvme_devices: tuple[str, ...] = _detect_nvmes()
-        if self._hdd_devices:
-            log.info("HDDs: %s", ", ".join(self._hdd_devices))
-        if self._nvme_devices:
-            log.info("NVMe: %s", ", ".join(self._nvme_devices))
+        self._last_set_speeds: dict[int, int] = {}
+
+        # Initialize sensors (detection happens in constructors)
+        self._sensors: list[sensors.Sensor] = [
+            sensors.K10Temp(),
+            sensors.Nvidiasmi(),
+            sensors.Smartctl(),
+            sensors.Nvmecli(),
+        ]
+        if config.ipmi_temps:
+            self._sensors.append(sensors.Ipmitool(config.ipmi_sensors))
 
     def initialize(self) -> bool:
-        """Initialize hardware for manual fan control. Sets BMC to full mode."""
-        return self._set_full_mode()
+        """Initialize hardware for manual fan control. Sets BMC to full mode.
+
+        Retries up to ipmi_ready_timeout_seconds if BMC is not ready.
+        """
+        deadline = time.time() + self.config.ipmi_ready_timeout_seconds
+        while True:
+            if self._set_full_mode():
+                return True
+            if time.time() >= deadline:
+                log.error(
+                    "BMC not ready after %.0fs", self.config.ipmi_ready_timeout_seconds
+                )
+                return False
+            log.warning(
+                "BMC not ready, retrying in %.0fs...",
+                self.config.ipmi_ready_retry_seconds,
+            )
+            time.sleep(self.config.ipmi_ready_retry_seconds)
 
     def get_temps(self) -> dict[str, tuple[int, ...] | None] | None:
-        """Get all temperatures. Returns None on critical failure (IPMI)."""
-        # Single IPMI call for all IPMI-based temps
-        out = _run_cmd(["ipmitool", "sensor"])
-        if out is None:
-            log.error("Failed to run ipmitool sensor")
+        """Get all temperatures. Returns None on critical failure."""
+        result: dict[str, tuple[int, ...] | None] = {}
+
+        for sensor in self._sensors:
+            sensor_result = sensor.get()
+            for key, temps in sensor_result.items():
+                if temps is not None:
+                    # Convert floats to ints
+                    result[key] = tuple(int(t) for t in temps)
+                elif key not in result:
+                    result[key] = None
+
+        # CPU and GPU are required
+        if not result.get("cpu"):
+            log.error("Failed to read CPU temp")
+            return None
+        if not result.get("gpu"):
+            log.error("Failed to read GPU temp")
             return None
 
-        # Collect temps as lists first, convert to tuples at end
-        # Order: devices with curves first, then informational
-        temps: dict[str, list[int]] = {
-            "cpu": [],
-            "ram": [],
-            "nvme": [],
-            "hdd": [],
-            "gpu": [],
-            "gpu_ipmi": [],
-            "vrm_soc": [],
-            "vrm_cpu": [],
-            "vrm_vddio": [],
-            "system": [],
-            "peripheral": [],
-        }
-
-        # Parse IPMI sensor output
-        for line in out.splitlines():
-            parts = line.split("|")
-            if len(parts) < 2:
-                continue
-            sensor_name = parts[0].strip()
-            if sensor_name not in self.config.ipmi_sensors:
-                continue
-            key = self.config.ipmi_sensors[sensor_name]
-            value_str = parts[1].strip()
-            try:
-                temp = self._valid_temp(float(value_str))
-                if temp is not None:
-                    temps[key].append(temp)
-            except ValueError:
-                pass  # "na" or other non-numeric
-
-        # CPU temp is required
-        if not temps["cpu"]:
-            log.error("Failed to read CPU temp from IPMI")
-            return None
-
-        # nvidia-smi for GPU temps
-        nv_out = _run_cmd(
-            [
-                "nvidia-smi",
-                "--query-gpu=temperature.gpu",
-                "--format=csv,noheader,nounits",
-            ]
-        )
-        if nv_out is not None:
-            gpu_temps = self._parse_nvidia_temps(nv_out)
-            if gpu_temps is not None:
-                temps["gpu"] = list(gpu_temps)
-        if not temps["gpu"]:
-            # Fallback to IPMI GPU temps
-            if not self._nvidia_warned and temps["gpu_ipmi"]:
-                log.warning("nvidia-smi failed, using IPMI GPU sensors")
-                self._nvidia_warned = True
-            temps["gpu"] = temps["gpu_ipmi"].copy()
-
-        # GPU is required (either nvidia-smi or IPMI)
-        if not temps["gpu"]:
-            log.error("Failed to read GPU temps")
-            return None
-
-        # HDD and NVMe temps (optional)
-        temps["hdd"] = self._get_hdd_temps()
-        temps["nvme"] = self._get_nvme_temps()
-
-        # Convert lists to tuples, empty lists to None
-        return {k: tuple(v) if v else None for k, v in temps.items()}
+        return result
 
     def get_zones(self) -> tuple[int, ...]:
         """Get available fan zones."""
         return self.config.zones
 
     def set_zone_speed(self, zone: int, percent: int) -> bool:
-        """Set fan zone speed."""
-        if self.current_speeds.get(zone) == percent:
+        """Set fan zone speed. Skips if already at requested speed."""
+        if self._last_set_speeds.get(zone) == percent:
             return True
-        out = _run_cmd(
+        log.debug("IPMI set zone %d to %d%% (0x%02x)", zone, percent, percent)
+        out = run_cmd(
             [
                 "ipmitool",
                 "raw",
@@ -218,93 +193,60 @@ class SupermicroH13:
                 f"0x{percent:02x}",
             ]
         )
-        if out is not None:
-            self.current_speeds[zone] = percent
-            return True
-        log.error("Failed to set zone %d to %d%%", zone, percent)
-        return False
+        if out is None:
+            log.error("Failed to set zone %d to %d%%", zone, percent)
+            return False
+        self._last_set_speeds[zone] = percent
+        # Let BMC settle after command
+        time.sleep(self.config.ipmi_write_delay_seconds)
+        # Verify read-back in debug mode
+        if log.isEnabledFor(logging.DEBUG):
+            actual = self._get_zone_speed(zone)
+            if actual is not None and actual != percent:
+                log.warning(
+                    "Zone %d: set %d%% but BMC reports %d%%", zone, percent, actual
+                )
+        return True
+
+    def _get_zone_speed(self, zone: int) -> int | None:
+        """Get current fan zone speed from BMC."""
+        out = run_cmd(
+            ["ipmitool", "raw", "0x30", "0x70", "0x66", "0x00", f"0x{zone:02x}"]
+        )
+        if not out:
+            return None
+        try:
+            return int(out.strip(), 16)
+        except ValueError:
+            return None
 
     def set_fail_safe(self) -> bool:
-        """Set BMC to full/fail-safe mode. BMC controls fans at 100%."""
-        return self._set_full_mode()
-
-    def _valid_temp(self, value: float) -> int | None:
-        """Return value as int if in valid range (0-120C), else None."""
-        if 0 <= value <= 120:
-            return int(value)
-        return None
-
-    def _parse_nvidia_temps(self, output: str) -> tuple[int, ...] | None:
-        """Parse nvidia-smi temperature output. Returns None if any line fails."""
-        temps: list[int] = []
-        for line in output.strip().splitlines():
-            try:
-                t = self._valid_temp(float(line.strip()))
-                if t is None:
-                    return None
-                temps.append(t)
-            except ValueError:
-                return None
-        return tuple(temps)
-
-    def _get_hdd_temps(self) -> list[int]:
-        """Get HDD temperatures via smartctl."""
-        temps: list[int] = []
-        for dev in self._hdd_devices:
-            out = _run_cmd(["smartctl", "-A", dev])
-            if out is None:
-                log.warning("Failed to read HDD temp from %s", dev)
-                continue
-            for line in out.splitlines():
-                if (
-                    "Temperature_Celsius" not in line
-                    and "Airflow_Temperature" not in line
-                ):
-                    continue
-                parts = line.split()
-                if len(parts) < 10:
-                    continue
-                try:
-                    t = self._valid_temp(float(parts[9]))
-                    if t is not None:
-                        temps.append(t)
-                except ValueError:
-                    pass
-        return temps
-
-    def _get_nvme_temps(self) -> list[int]:
-        """Get NVMe temperatures via nvme-cli."""
-        temps: list[int] = []
-        for dev in self._nvme_devices:
-            out = _run_cmd(["nvme", "smart-log", dev])
-            if out is None:
-                log.warning("Failed to read NVMe temp from %s", dev)
-                continue
-            for line in out.splitlines():
-                if not line.strip().lower().startswith("temperature"):
-                    continue
-                parts = line.split(":")
-                if len(parts) < 2:
-                    continue
-                try:
-                    t = self._valid_temp(
-                        float(parts[1].strip().split()[0].replace(",", ""))
-                    )
-                    if t is not None:
-                        temps.append(t)
-                        break
-                except (ValueError, IndexError):
-                    pass
-        return temps
+        """Set BMC to full mode and clear speed cache. Retries until success."""
+        self._last_set_speeds.clear()
+        deadline = time.time() + self.config.ipmi_ready_timeout_seconds
+        while True:
+            if self._set_full_mode():
+                return True
+            if time.time() >= deadline:
+                log.error(
+                    "Failed to set fail-safe after %.0fs",
+                    self.config.ipmi_ready_timeout_seconds,
+                )
+                return False
+            log.warning(
+                "Fail-safe failed, retrying in %.0fs...",
+                self.config.ipmi_ready_retry_seconds,
+            )
+            time.sleep(self.config.ipmi_ready_retry_seconds)
 
     def _set_full_mode(self) -> bool:
         """Ensure BMC is in full/manual fan mode."""
-        out = _run_cmd(["ipmitool", "raw", "0x30", "0x45", "0x00"])
+        out = run_cmd(["ipmitool", "raw", "0x30", "0x45", "0x00"])
         if out is None or out.strip() != "01":
-            if _run_cmd(["ipmitool", "raw", "0x30", "0x45", "0x01", "0x01"]) is None:
+            if run_cmd(["ipmitool", "raw", "0x30", "0x45", "0x01", "0x01"]) is None:
                 log.error("Failed to set full fan mode")
                 return False
-            time.sleep(0.5)
+            time.sleep(self.config.ipmi_write_delay_seconds)
         return True
 
 
@@ -332,13 +274,14 @@ class FanSpeed:
                     (85, 100, None),
                 ),
                 # RAM: DDR5 SK Hynix - max 85°C (85%: 72°C)
-                ("ram", -1, 0): (
-                    (0, 15, None),
-                    (50, 25, None),
-                    (60, 40, None),
-                    (68, 70, None),
-                    (72, 100, None),
-                ),
+                # Requires --ipmi-temps flag to enable RAM temp monitoring
+                # ("ram", -1, 0): (
+                #     (0, 15, None),
+                #     (50, 25, None),
+                #     (60, 40, None),
+                #     (68, 70, None),
+                #     (72, 100, None),
+                # ),
                 # NVMe: WD Black SN8100 - max 85°C (85%: 72°C)
                 ("nvme", -1, 0): (
                     (0, 15, None),
@@ -356,25 +299,21 @@ class FanSpeed:
                     (60, 100, None),
                 ),
                 # GPU: NVIDIA RTX 5090 - throttle 90°C (85%: 77°C)
-                # Zone 0 (case fans): steady ramp, hits 100% at 85°C
+                # Zone 0 (case fans): ramp earlier to help GPU cooling
                 ("gpu", -1, 0): (
                     (0, 15, None),
-                    (40, 20, None),
-                    (50, 25, None),
-                    (55, 30, None),
-                    (60, 35, None),
-                    (65, 40, None),
-                    (70, 50, None),
-                    (80, 80, None),
-                    (85, 100, None),
+                    (40, 25, None),
+                    (50, 40, None),
+                    (60, 60, None),
+                    (70, 80, None),
+                    (80, 100, None),
                 ),
-                # Zone 1 (GPU fans): more aggressive, hits 100% at 70°C
+                # Zone 1 (GPU fans): aggressive - 100% above 50°C
                 ("gpu", -1, 1): (
                     (0, 15, None),
-                    (30, 35, None),
-                    (40, 50, None),
-                    (50, 80, None),
-                    (60, 100, None),
+                    (35, 40, None),
+                    (45, 80, None),
+                    (50, 100, None),
                 ),
             }
         )
@@ -611,6 +550,20 @@ class FanDaemon:
 
         if not self.hardware.initialize():
             log.error("Failed to initialize hardware")
+            sys.exit(1)
+
+        # Verify all speed mappings have corresponding sensors
+        temps = self.hardware.get_temps()
+        if temps is None:
+            log.error("Failed to read temps during startup")
+            sys.exit(1)
+        missing = self._check_mappings(temps)
+        if missing:
+            log.error(
+                "Speed mappings reference missing sensors: %s", ", ".join(missing)
+            )
+            log.error("Available sensors: %s", ", ".join(sorted(temps.keys())))
+            sys.exit(1)
 
         self.running = True
         while self.running:
@@ -767,6 +720,27 @@ class FanDaemon:
 
         return "\n".join(lines)
 
+    def _check_mappings(
+        self,
+        temps: dict[str, tuple[int, ...] | None],
+    ) -> list[str]:
+        """Check that all speed mapping device types have sensors.
+
+        Returns list of missing device types.
+        """
+        # Get all device types from speed mappings
+        mapping_types: set[str] = set()
+        for (device_type, _, _), mapping in self.speed.config.speeds.items():
+            if mapping is not None:  # Skip disabled mappings
+                mapping_types.add(device_type)
+
+        # Check each mapping type exists in temps
+        missing: list[str] = []
+        for device_type in sorted(mapping_types):
+            if device_type not in temps:
+                missing.append(device_type)
+        return missing
+
     def _compute_zone_speeds(
         self,
         temps: dict[str, tuple[int, ...] | None],
@@ -798,35 +772,6 @@ class FanDaemon:
                 # No mappings for this zone - fail-safe to 100%
                 results[zone] = (100, "none", 0)
         return results
-
-
-def _run_cmd(cmd: list[str], timeout: float = 5.0) -> str | None:
-    """Run command with timeout. Returns stdout on success, None on failure."""
-    try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return r.stdout if r.returncode == 0 else None
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-
-
-def _detect_hdds() -> tuple[str, ...]:
-    """Auto-detect HDDs (rotational disks)."""
-    hdds: list[str] = []
-    for block in pathlib.Path("/sys/block").iterdir():
-        if not block.name.startswith("sd"):
-            continue
-        rotational = block / "queue" / "rotational"
-        if rotational.exists() and rotational.read_text().strip() == "1":
-            hdds.append(f"/dev/{block.name}")
-    return tuple(sorted(hdds))
-
-
-def _detect_nvmes() -> tuple[str, ...]:
-    """Auto-detect NVMe devices."""
-    nvmes: list[str] = []
-    for dev in pathlib.Path("/dev").glob("nvme*n1"):
-        nvmes.append(str(dev))
-    return tuple(sorted(nvmes))
 
 
 def main() -> None:

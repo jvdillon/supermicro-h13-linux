@@ -215,7 +215,7 @@ We wrote our own because of architectural differences:
 
 | Feature | fan-daemon | smfc |
 |---------|------------|------|
-| Complexity | ~850 lines, single file | ~3500 lines, multiple modules |
+| Complexity | ~1050 lines, single file | ~3500 lines, multiple modules |
 | Hardware abstraction | `Hardware` protocol for easy porting | Supermicro-specific |
 | Zone overlap | One device can drive multiple zones | Each controller owns one zone, no overlap |
 | Curves | Piecewise-constant with arbitrary breakpoints | Linear min/max interpolation |
