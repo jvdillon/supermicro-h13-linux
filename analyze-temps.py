@@ -238,8 +238,14 @@ def merge_data(
     return result
 
 
-def plot_data(data: dict[str, np.ndarray], path: Path) -> None:
-    """Generate plot with temps and fan speeds."""
+def plot_data(data: dict[str, np.ndarray], path: Path, since: float | None = None) -> None:
+    """Generate plot with temps and fan speeds.
+
+    Args:
+        data: Dict with numpy arrays.
+        path: Output path for PNG.
+        since: If provided, only show data from this timestamp onwards.
+    """
     try:
         import matplotlib.pyplot as plt
         import matplotlib.dates as mdates
@@ -314,6 +320,8 @@ def plot_data(data: dict[str, np.ndarray], path: Path) -> None:
     # Format x-axis with hourly ticks
     ax1.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
     ax1.xaxis.set_major_locator(mdates.HourLocator())
+    if since is not None:
+        ax1.set_xlim(left=datetime.fromtimestamp(since))  # pyright: ignore[reportArgumentType]
     fig.autofmt_xdate()
 
     # Combined legend
@@ -363,6 +371,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Parse --since if provided (used for both scraping and plot xlim)
+    since_ts: float | None = None
+    if args.since is not None:
+        try:
+            since_ts = parse_flexible_datetime(args.since)
+        except ValueError as e:
+            parser.error(str(e))
+
     if args.npz:
         # Load existing npz, skip collection
         data = load_npz(args.npz)
@@ -377,11 +393,7 @@ def main() -> None:
         if args.all:
             print("Scraping all history")
             new_data = parse_journalctl(since=None)
-        elif args.since is not None:
-            try:
-                since_ts = parse_flexible_datetime(args.since)
-            except ValueError as e:
-                parser.error(str(e))
+        elif since_ts is not None:
             print(f"Scraping since {datetime.fromtimestamp(since_ts)}")
             new_data = parse_journalctl(since=since_ts)
         else:
@@ -410,8 +422,8 @@ def main() -> None:
             data = merge_data(old_data, new_data)
             save_npz(data, args.output)
 
-    # Generate plot
-    plot_data(data, args.png)
+    # Generate plot (since_ts sets xlim if provided)
+    plot_data(data, args.png, since=since_ts)
 
 
 if __name__ == "__main__":
