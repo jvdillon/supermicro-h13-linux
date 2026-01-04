@@ -495,7 +495,7 @@ class FanDaemon:
         """Daemon configuration."""
 
         interval_seconds: float = 5.0
-        heartbeat_seconds: float = 0.0  # 0 = disabled
+        heartbeat_seconds: float = 30.0  # 0 = disabled
 
         @classmethod
         def add_args(cls, argparser: argparse.ArgumentParser) -> None:

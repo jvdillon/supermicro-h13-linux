@@ -587,7 +587,7 @@ class TestConfigFromArgs:
         args = argparser.parse_args([])
         config = FanDaemon.Config.from_args(argparser, args)
         assert config.interval_seconds == 5.0
-        assert config.heartbeat_seconds == 0.0
+        assert config.heartbeat_seconds == 30.0
 
 
 class TestUtilityFunctions:
