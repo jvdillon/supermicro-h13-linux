@@ -326,10 +326,11 @@ class FanSpeed:
         @classmethod
         def add_args(cls, argparser: argparse.ArgumentParser) -> None:
             """Add mapping arguments to parser."""
+            defaults = cls()
             _ = argparser.add_argument(
                 "--hysteresis_celsius",
-                type=float,
-                default=5.0,
+                type=type(defaults.hysteresis_celsius),
+                default=defaults.hysteresis_celsius,
                 help="Hysteresis (C) for falling temps.",
             )
             _ = argparser.add_argument(
@@ -499,17 +500,17 @@ class FanDaemon:
         @classmethod
         def add_args(cls, argparser: argparse.ArgumentParser) -> None:
             """Add daemon configuration arguments to parser."""
-            del cls  # unused (slots=True prevents accessing defaults via cls)
+            defaults = cls()
             _ = argparser.add_argument(
                 "--interval_seconds",
-                type=float,
-                default=5.0,
+                type=type(defaults.interval_seconds),
+                default=defaults.interval_seconds,
                 help="Poll interval (seconds).",
             )
             _ = argparser.add_argument(
                 "--heartbeat_seconds",
-                type=float,
-                default=0.0,
+                type=type(defaults.heartbeat_seconds),
+                default=defaults.heartbeat_seconds,
                 help="Heartbeat interval (seconds). 0=disabled.",
             )
 
