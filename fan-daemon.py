@@ -141,7 +141,8 @@ class SupermicroH13:
                 return True
             if time.time() >= deadline:
                 log.error(
-                    "BMC not ready after %.0fs", self.config.ipmi_ready_timeout_seconds
+                    "BMC not ready after %.0fs",
+                    self.config.ipmi_ready_timeout_seconds,
                 )
                 return False
             log.warning(
@@ -205,7 +206,10 @@ class SupermicroH13:
             actual = self._get_zone_speed(zone)
             if actual is not None and actual != percent:
                 log.warning(
-                    "Zone %d: set %d%% but BMC reports %d%%", zone, percent, actual
+                    "Zone %d: set %d%% but BMC reports %d%%",
+                    zone,
+                    percent,
+                    actual,
                 )
         return True
 
@@ -762,7 +766,14 @@ class FanDaemon:
                             temp, mapping, active_thresh
                         )
                         candidates.append(
-                            (spd, f"{name.upper()}{idx}", temp, name, idx, new_thresh)
+                            (
+                                spd,
+                                f"{name.upper()}{idx}",
+                                temp,
+                                name,
+                                idx,
+                                new_thresh,
+                            )
                         )
             if candidates:
                 spd, trigger, temp, dev_name, dev_idx, new_thresh = max(
