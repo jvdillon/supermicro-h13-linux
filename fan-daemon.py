@@ -34,7 +34,8 @@ import time
 from typing import Protocol, cast, final
 
 import sensors
-from sensors import run_cmd
+
+run_cmd = sensors.run_cmd
 
 log = logging.getLogger("fan-daemon")
 
@@ -813,18 +814,11 @@ Mapping format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
         format="%(levelname)s: %(message)s",
     )
 
-    daemon = FanDaemon.Config.from_args(
-        argparser,
-        args,
-    ).setup(
-        hardware=SupermicroH13.Config.from_args(
-            argparser,
-            args,
-        ).setup(),
-        speed=FanSpeed.Config.from_args(
-            argparser,
-            args,
-        ).setup(),
+    hardware = SupermicroH13.Config.from_args(argparser, args).setup()
+    speed = FanSpeed.Config.from_args(argparser, args).setup()
+    daemon = FanDaemon.Config.from_args(argparser, args).setup(
+        hardware=hardware,
+        speed=speed,
     )
     daemon.run()
 
