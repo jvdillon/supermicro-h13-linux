@@ -571,6 +571,28 @@ class TestSupermicroH13:
             result = hw.set_zone_speed(0, 50)
         assert result is True
 
+    def test_set_zone_speed_skips_if_unchanged(self, hw: SupermicroH13) -> None:
+        """Setting same speed twice skips the IPMI call."""
+        call_count = 0
+
+        def mockrun_cmd(cmd: list[str], _timeout: float = 5.0) -> str | None:
+            nonlocal call_count
+            if "0x66" in cmd:
+                call_count += 1
+            if "0x45" in cmd and "0x00" in cmd:
+                return "01"
+            return ""
+
+        with patch.object(_module, "run_cmd", side_effect=mockrun_cmd):
+            # First call should set speed
+            result1 = hw.set_zone_speed(0, 50)
+            assert result1 is True
+            assert call_count == 1
+            # Second call with same speed should skip
+            result2 = hw.set_zone_speed(0, 50)
+            assert result2 is True
+            assert call_count == 1  # No additional call
+
     def test_set_zone_speed_failure(self, hw: SupermicroH13) -> None:
         def mockrun_cmd(cmd: list[str], _timeout: float = 5.0) -> str | None:
             if "0x45" in cmd and "0x00" in cmd:
@@ -636,6 +658,18 @@ class TestSupermicroH13:
         with patch.object(_module, "run_cmd", side_effect=mockrun_cmd):
             result = hw._set_full_mode()
         assert result is False
+
+    def test_ipmi_temps_adds_ipmitool_sensor(self) -> None:
+        """When ipmi_temps=True, Ipmitool sensor is added."""
+        hw = SupermicroH13.Config(ipmi_temps=True).setup()
+        sensor_types = [type(s).__name__ for s in hw._sensors]
+        assert "Ipmitool" in sensor_types
+
+    def test_ipmi_temps_false_no_ipmitool_sensor(self) -> None:
+        """When ipmi_temps=False (default), no Ipmitool sensor."""
+        hw = SupermicroH13.Config(ipmi_temps=False).setup()
+        sensor_types = [type(s).__name__ for s in hw._sensors]
+        assert "Ipmitool" not in sensor_types
 
 
 class TestConfigFromArgs:
@@ -738,6 +772,31 @@ class TestFanDaemonLifecycle:
         # Check winner markers
         assert "<-- z0" in status
         assert "<-- z1" in status
+
+    def test_format_status_with_informational_sensors(self) -> None:
+        """Sensors without speed curves (gpu_ipmi, vrm_cpu) appear in output."""
+        hardware = MockHardware()
+        # Only gpu has a curve in defaults, gpu_ipmi and vrm_cpu don't
+        fan_speed = FanSpeed.Config(
+            speeds={
+                ("gpu", -1, -1): ((0.0, 15.0, None, None), (80.0, 100.0, None, None))
+            }
+        ).setup()
+        daemon = FanDaemon.Config().setup(hardware, fan_speed)
+
+        zone_speeds = {0: (50, "GPU0", 70)}
+        # gpu_ipmi and vrm_cpu have no speed curves - informational only
+        temps = {"gpu": (70,), "gpu_ipmi": (72,), "vrm_cpu": (45,)}
+
+        status = daemon._format_status(zone_speeds, temps)
+        # Devices with curves show zone contributions
+        assert "gpu0" in status
+        assert "70C" in status
+        # Devices without curves still appear (informational)
+        assert "gpu_ipmi0" in status
+        assert "72C" in status
+        assert "vrm_cpu0" in status
+        assert "45C" in status
 
     def test_heartbeat_logging(self) -> None:
         hardware = MockHardware()
@@ -877,6 +936,50 @@ class TestFanDaemonRun:
             daemon.run()
 
         assert hardware.fail_safe_called
+
+    def test_run_exits_if_initialize_fails(self) -> None:
+        """Test that run() exits with code 1 if hardware.initialize() fails."""
+        hardware = MockHardware()
+        hardware.initialize = lambda: False  # type: ignore[method-assign]
+
+        fan_speed = FanSpeed.Config().setup()
+        daemon = FanDaemon.Config().setup(hardware, fan_speed)
+
+        with pytest.raises(SystemExit) as exc_info:
+            daemon.run()
+        assert exc_info.value.code == 1
+
+    def test_run_exits_if_get_temps_fails_at_startup(self) -> None:
+        """Test that run() exits with code 1 if initial get_temps() returns None."""
+        hardware = MockHardware()
+        hardware.get_temps = lambda: None  # type: ignore[method-assign]
+
+        fan_speed = FanSpeed.Config().setup()
+        daemon = FanDaemon.Config().setup(hardware, fan_speed)
+
+        with pytest.raises(SystemExit) as exc_info:
+            daemon.run()
+        assert exc_info.value.code == 1
+
+    def test_run_exits_if_mapping_references_missing_sensor(self) -> None:
+        """Test that run() exits if speed mapping references non-existent sensor."""
+        hardware = MockHardware()
+        # Hardware only returns cpu temps, but we have a mapping for "nonexistent"
+        hardware.get_temps = lambda: {"cpu": (45,)}  # type: ignore[method-assign]
+
+        fan_speed = FanSpeed.Config(
+            speeds={
+                ("nonexistent", -1, -1): (
+                    (0.0, 15.0, None, None),
+                    (80.0, 100.0, None, None),
+                )
+            }
+        ).setup()
+        daemon = FanDaemon.Config().setup(hardware, fan_speed)
+
+        with pytest.raises(SystemExit) as exc_info:
+            daemon.run()
+        assert exc_info.value.code == 1
 
 
 class TestEdgeCases:
