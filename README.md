@@ -1,8 +1,10 @@
 # Supermicro Motherboard Linux Setup
 
 Fan control and IPMI configuration for server motherboards running Linux.
-Tested on Supermicro H13-series (H13SSL-N, H13SSL-NT); extensible to other
-boards and sensors via the `Hardware` and `Sensor` protocols.
+Tested on Supermicro [H13-series (H13SSL-N,
+H13SSL-NT)](https://www.supermicro.com/en/products/motherboard/h13ssl-n) but
+extensible to other boards and sensors via the `Hardware` and `Sensor`
+protocols.
 
 ## Contents
 
