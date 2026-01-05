@@ -620,4 +620,5 @@ class TestSensorProtocol:
             nvmecli = sensors.Nvmecli()
         assert isinstance(nvmecli.get(), dict)
 
-        assert isinstance(sensors.Ipmitool({}).get(), dict)
+        with patch.object(sensors, "run_cmd", return_value=None):
+            assert isinstance(sensors.Ipmitool({}).get(), dict)
