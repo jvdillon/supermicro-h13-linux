@@ -8,7 +8,7 @@ boards and sensors via the `Hardware` and `Sensor` protocols.
 
 - `fan-control.sh` - Manual fan speed control
 - `fan-daemon.py` - Automatic temperature-based fan control daemon
-- `analyze-temps.py` - Temperature log analysis and plotting
+- `visualize-temps.py` - Temperature log visualization and plotting
 - `lshw.sh` - Hardware inventory script
 - `setup-fan-daemon.sh` - Install/uninstall the daemon as a systemd service
 - `setup-ipmi-access.sh` - Configure unprivileged IPMI access
@@ -35,7 +35,7 @@ speeds using piecewise-constant curves with configurable thresholds.
   commands. Port to other boards by implementing the interface.
 - **Fail-safe**: Any error sets fans to 100%.
 
-**Analysis** - `analyze-temps.py` scrapes `journalctl` logs, stores data in
+**Visualization** - `visualize-temps.py` scrapes `journalctl` logs, stores data in
 npz, and generates temperature/fan speed plots for tuning curves.
 
 ## Quick Start
@@ -135,12 +135,12 @@ INFO: z0=40% z1=100%
       vrm_cpu0     42C
 ```
 
-For historical analysis and curve tuning, use `analyze-temps.py`:
+For historical visualization and curve tuning, use `visualize-temps.py`:
 
 ```bash
-./analyze-temps.py                    # Scrape logs, save to results/temps.npz, plot
-./analyze-temps.py --since "2 hours"  # Limit time range
-./analyze-temps.py --no-plot          # Just scrape and save data
+./visualize-temps.py                    # Scrape logs, save to results/temps.npz, plot
+./visualize-temps.py --since "2 hours"  # Limit time range
+./visualize-temps.py --no-plot          # Just scrape and save data
 ```
 
 ## Manual Fan Control

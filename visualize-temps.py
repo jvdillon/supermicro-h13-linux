@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # pyright: basic
 """
-Analyze fan-daemon temperature logs from journalctl.
+Visualize fan-daemon temperature logs from journalctl.
 
 Parses logs, stores data in npz, generates plots.
 
 Usage:
-    ./analyze-temps.py                    # scrape since fan-daemon last started
-    ./analyze-temps.py --all              # scrape all history
-    ./analyze-temps.py --since "2 hours"  # scrape last 2 hours (relative)
-    ./analyze-temps.py --since "2026-01-04 10:30:00"  # scrape since time (absolute)
-    ./analyze-temps.py --npz data.npz     # load existing npz, skip collection
+    ./visualize-temps.py                    # scrape since fan-daemon last started
+    ./visualize-temps.py --all              # scrape all history
+    ./visualize-temps.py --since "2 hours"  # scrape last 2 hours (relative)
+    ./visualize-temps.py --since "2026-01-04 10:30:00"  # scrape since time (absolute)
+    ./visualize-temps.py --npz data.npz     # load existing npz, skip collection
 """
 
 from __future__ import annotations
