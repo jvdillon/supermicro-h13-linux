@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-RESULTS_DIR = Path("results")
+RESULTS_DIR = Path(__file__).parent / Path("results")
 DEFAULT_NPZ = RESULTS_DIR / "temps.npz"
 DEFAULT_PNG = RESULTS_DIR / "temps.png"
 
