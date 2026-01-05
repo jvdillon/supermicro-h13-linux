@@ -276,7 +276,7 @@ Summary of differences:
 | Temp hysteresis | Deadband | Deadband (aka "Sensitivity") |
 | Time hysteresis | Min hold: temp must stay low for N seconds (true hysteresis) | Delay after speed change |
 | Config | CLI flags with sensible defaults | INI config file required |
-| Complexity | ~1050 lines | ~3500 lines |
+| Complexity | ~1100 lines | ~3500 lines |
 | Hardware abstraction | `Hardware` protocol for easy porting | Supermicro-specific |
 | Sensor abstraction | `Sensor` protocol for easy extension | Hardcoded sensor types |
 | Sensor merging | Logical devices (keys) from multiple physical sensors | Fixed sensor per device type |
