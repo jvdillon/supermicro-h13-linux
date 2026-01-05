@@ -1,39 +1,42 @@
-# Supermicro H13 Linux Setup
+# Supermicro Motherboard Linux Setup
 
-Fan control and IPMI configuration for Supermicro H13-series motherboards
-(H13SSL-N, H13SSW, etc.) running Linux.
+Fan control and IPMI configuration for server motherboards running Linux.
+Tested on Supermicro H13-series (H13SSL-N, H13SSL-NT); extensible to other
+boards and sensors via the `Hardware` and `Sensor` protocols.
 
 ## Contents
 
-- `fan-daemon.py` - Automatic temperature-based fan control daemon
 - `fan-control.sh` - Manual fan speed control
+- `fan-daemon.py` - Automatic temperature-based fan control daemon
+- `analyze-temps.py` - Temperature log analysis and plotting
+- `lshw.sh` - Hardware inventory script
 - `setup-fan-daemon.sh` - Install/uninstall the daemon as a systemd service
 - `setup-ipmi-access.sh` - Configure unprivileged IPMI access
 - `setup-ipmi-limits.sh` - Disable low-RPM alarms and set sensor thresholds
-- `lshw.sh` - Hardware inventory script
-- `analyze-temps.py` - Temperature log analysis and plotting
 
 ## Features
 
-**Manual control** - `fan-control.sh` provides simple per-zone fan speed control
-via IPMI raw commands. Set exact percentages or switch between BMC modes.
+**Manual control** - `fan-control.sh` provides simple per-zone fan speed
+control via IPMI raw commands. Set exact percentages or switch between BMC
+modes.
 
-**Automatic daemon** - `fan-daemon.py` monitors temperatures and adjusts fan speeds
-using piecewise-constant curves with configurable thresholds.
+**Automatic daemon** - `fan-daemon.py` monitors temperatures and adjusts fan
+speeds using piecewise-constant curves with configurable thresholds.
 
 - **Multi-zone**: Different curves for case fans (zone 0) vs GPU fans (zone 1).
   One device can drive multiple zones with different curves.
-- **Dual hysteresis**: Temperature hysteresis (deadband) prevents oscillation at
-  thresholds. Time hysteresis (min hold) requires temps to stay low before
+- **Dual hysteresis**: Temperature hysteresis (deadband) prevents oscillation
+  at thresholds. Time hysteresis (min hold) requires temps to stay low before
   dropping speed, handling bursty workloads.
-- **Extensible sensors**: `Sensor` protocol for CPU (k10temp), GPU (nvidia-smi),
-  NVMe, HDD (smartctl), and IPMI. Add new sensors by implementing `get()`.
-- **Modular hardware**: `Hardware` protocol abstracts board-specific IPMI commands.
-  Port to other boards by implementing the interface.
+- **Extensible sensors**: `Sensor` protocol for CPU (`k10temp`), GPU
+  (`nvidia-smi`), NVMe (`nvme-cli`), HDD (`smartctl`), and IPMI (`ipmitool`).
+  Add new sensors by implementing `get()`.
+- **Modular hardware**: `Hardware` protocol abstracts board-specific IPMI
+  commands. Port to other boards by implementing the interface.
 - **Fail-safe**: Any error sets fans to 100%.
 
-**Analysis** - `analyze-temps.py` scrapes journalctl logs, stores data in npz,
-and generates temperature/fan speed plots for tuning curves.
+**Analysis** - `analyze-temps.py` scrapes `journalctl` logs, stores data in
+npz, and generates temperature/fan speed plots for tuning curves.
 
 ## Quick Start
 
@@ -48,7 +51,7 @@ sudo ./setup-ipmi-access.sh
 sudo ./setup-ipmi-limits.sh
 
 # Install the automatic fan control daemon
-sudo ./setup-fan-daemon.sh install
+sudo ./setup-fan-daemon.sh install  # Or install-dev
 
 # Monitor the daemon
 journalctl -u fan-daemon -f
@@ -56,9 +59,9 @@ journalctl -u fan-daemon -f
 
 ## Fan Daemon
 
-The `fan-daemon.py` script provides automatic temperature-based fan control.
-It reads temperatures from CPU, GPU, RAM, HDD, and NVMe devices and adjusts
-fan speeds using piecewise-constant curves with hysteresis.
+The `fan-daemon.py` script provides automatic temperature-based fan control. It
+reads temperatures from CPU, GPU, RAM, HDD, and NVMe devices and adjusts fan
+speeds using piecewise-constant curves with hysteresis.
 
 ### Features
 
@@ -66,7 +69,7 @@ fan speeds using piecewise-constant curves with hysteresis.
 - Two-zone control (zone 0: FAN1-4, zone 1: FANA-B)
 - Hysteresis to prevent oscillation at threshold boundaries
 - Fail-safe: any error sets fans to 100%
-- GPU temps via nvidia-smi with IPMI fallback
+- GPU temps via `nvidia-smi` (IPMI available via `--ipmi-temps`)
 
 ### Installation
 
@@ -88,8 +91,8 @@ View options:
 Override temperature mappings via command line:
 
 ```bash
-# Format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST_CEL[:HYST_SEC]],...
-# HYST_CEL = temp hysteresis (C), HYST_SEC = time hysteresis (s)
+# Format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST_C[:HYST_S]],...
+# HYST_C = temp hysteresis (C), HYST_S = time hysteresis (s)
 # Empty value uses default: 70:80::60 = default temp hyst, 60s time hyst
 --speeds gpu=50:20,70:50,85:100           # All GPUs, all zones
 --speeds gpu0-zone1=60:30,80:100          # GPU 0, zone 1 only
@@ -116,7 +119,8 @@ sudo apt install ipmitool smartmontools nvme-cli
 journalctl -u fan-daemon -f
 ```
 
-Output shows zone speeds, per-device temps, and which device triggered each zone:
+Output shows zone speeds, per-device temps, and which device triggered each
+zone:
 
 ```
 INFO: z0=40% z1=100%
@@ -129,6 +133,14 @@ INFO: z0=40% z1=100%
       gpu1         70C  z0:40%  z1:100%
       gpu_ipmi0    73C
       vrm_cpu0     42C
+```
+
+For historical analysis and curve tuning, use `analyze-temps.py`:
+
+```bash
+./analyze-temps.py                    # Scrape logs, save to results/temps.npz, plot
+./analyze-temps.py --since "2 hours"  # Limit time range
+./analyze-temps.py --no-plot          # Just scrape and save data
 ```
 
 ## Manual Fan Control
@@ -201,6 +213,9 @@ This disables low-RPM alarms. Run once after BMC reset.
 
 ## IPMI Raw Commands Reference
 
+The following IPMI raw commands are derived from
+[smfc](https://github.com/petersulyok/smfc).
+
 ```bash
 # Get current mode (00=standard, 01=full, 02=optimal, 04=heavyio)
 ipmitool raw 0x30 0x45 0x00
@@ -232,36 +247,47 @@ ipmitool raw 0x30 0x70 0x66 0x01 0x01 0x28  # Zone 1 to 40%
 | HDD         | Seagate IronWolf Pro 12TB          |
 | OS          | Ubuntu 24.04                       |
 
-Should work on other H13-series boards with similar BMC firmware.
+Should work on other H13-series boards with similar BMC firmware. Other boards
+and sensors can be supported by implementing the `Hardware` and `Sensor` protocols.
 
-## Why Not smfc?
+## Why not smfc?
 
-[smfc](https://github.com/petersulyok/smfc) is a mature fan control solution for Supermicro boards.
-We wrote our own because of architectural differences:
+[smfc](https://github.com/petersulyok/smfc) is a mature fan control solution
+for Supermicro boards and an excellent project.
+
+We opted to write our own because of the need for a fundamentally different
+control loop architecture. The key difference is zone overlap: for example, our
+GPUs drive both case fans (zone 0, gentle curve) and GPU-specific fans (zone 1,
+aggressive curve) simultaneously.
+smfc's architecture requires one controller per zone with no overlap. This
+difference makes sense because smfc appears to be written more with HDD in mind
+than GPU, the latter having significant case-wide temperature implications.
+
+Summary of differences:
 
 | Feature | fan-daemon | smfc |
 |---------|------------|------|
+| Device multizone | One device can drive multiple zones | Each controller owns one zone, no overlap |
+| Zone arbitration | Max speed wins across all devices per zone | N/A (single controller per zone) |
+| Curves | Piecewise-constant with arbitrary breakpoints | Linear min/max interpolation |
+| Temp hysteresis | Deadband | Deadband ("Sensitivity") |
+| Time hysteresis | Min hold: temp must stay low for N seconds (true hysteresis) | Delay after speed change |
+| Config | CLI flags with sensible defaults | INI config file required |
 | Complexity | ~1050 lines, single file | ~3500 lines, multiple modules |
 | Hardware abstraction | `Hardware` protocol for easy porting | Supermicro-specific |
-| Zone overlap | One device can drive multiple zones | Each controller owns one zone, no overlap |
-| Curves | Piecewise-constant with arbitrary breakpoints | Linear min/max interpolation |
-| Config | CLI flags with sensible defaults | INI config file required |
-| CPU temp | IPMI sensor | Kernel modules (coretemp/k10temp) |
-| GPU temp | nvidia-smi with IPMI fallback | nvidia-smi only |
+| Sensor abstraction | `Sensor` protocol for easy extension | Hardcoded sensor types |
+| Sensor merging | Logical devices (keys) from multiple physical sensors | Fixed sensor per device type |
 | Python | Typed (passes pyright strict) | Untyped |
-| Dependencies | ipmitool (smartctl/nvme-cli optional) | Kernel modules required |
 
-The key difference is zone overlap: our GPUs drive both case fans (zone 0, gentle curve)
-and GPU-specific fans (zone 1, aggressive curve) simultaneously. smfc's architecture
-requires one controller per zone with no overlap.
+We support either using IPMI (BMC) for temps or device specific tools
+(`coretemp/k10temp`, `nvidia-smi`, `smartctl`, `nvme-cli`, etc). Although BMC
+is the authority on server boards (such as the H13)--it is slow and prone to
+race conditions. By default we use the most specific sensor reader we can, but
+offer an `ipmitool`-based sensor and a clean mechanism for merging sensors.
 
-We use IPMI for CPU temps rather than kernel modules (coretemp/k10temp) because on server
-boards the BMC is the authority—it has dedicated hardware with manufacturer-calibrated
-sensors, exposes temps that kernel modules can't see (RAM, VRM, peripheral), and is the
-same interface the BMC uses for its own fan control.
-
-The code uses a `Hardware` protocol, so adding support for other motherboards is
-straightforward—just implement the interface (`get_temps`, `set_zone_speed`, etc.).
+The `Hardware` protocol abstracts board-specific IPMI commands, so adding
+support for other motherboards is straightforward--just implement the interface
+(`get_temps`, `set_zone_speed`, etc.).
 
 ## Acknowledgments
 

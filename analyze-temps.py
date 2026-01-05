@@ -6,10 +6,11 @@ Analyze fan-daemon temperature logs from journalctl.
 Parses logs, stores data in npz, generates plots.
 
 Usage:
-    ./analyze-temps.py                              # scrape since fan-daemon last started
-    ./analyze-temps.py --all                        # scrape all history
-    ./analyze-temps.py --since "2026-01-04 10:30:00"  # scrape since specific time
-    ./analyze-temps.py --npz data.npz               # load existing npz, skip collection
+    ./analyze-temps.py                    # scrape since fan-daemon last started
+    ./analyze-temps.py --all              # scrape all history
+    ./analyze-temps.py --since "2 hours"  # scrape last 2 hours (relative)
+    ./analyze-temps.py --since "2026-01-04 10:30:00"  # scrape since time (absolute)
+    ./analyze-temps.py --npz data.npz     # load existing npz, skip collection
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import argparse
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -29,16 +31,35 @@ DEFAULT_PNG = RESULTS_DIR / "temps.png"
 
 
 def parse_flexible_datetime(s: str) -> float:
-    """Parse datetime with flexible delimiters (YYYY-MM-DD HH:MM:SS or YY-MM-DD HH:MM:SS).
+    """Parse datetime or relative time.
 
-    Splits on all non-digits, expects 6 components: year, month, day, hour, min, sec.
-    Year can be 2-digit (00-99 maps to 2000-2099) or 4-digit.
+    Supports:
+    - Absolute: "YYYY-MM-DD HH:MM:SS" (flexible delimiters, 2 or 4 digit year)
+    - Relative: "2 hours", "30 minutes", "1 day", "2h", "30m", "1d"
     """
-    parts = re.split(r"\D+", s.strip())
+    s = s.strip().lower()
+
+    # Try relative time first
+    relative_match = re.match(r"^(\d+)\s*(h|hour|hours|m|min|mins|minute|minutes|d|day|days|s|sec|secs|second|seconds)$", s)
+    if relative_match:
+        value = int(relative_match.group(1))
+        unit = relative_match.group(2)
+        if unit in ("h", "hour", "hours"):
+            delta = value * 3600
+        elif unit in ("m", "min", "mins", "minute", "minutes"):
+            delta = value * 60
+        elif unit in ("d", "day", "days"):
+            delta = value * 86400
+        else:  # seconds
+            delta = value
+        return time.time() - delta
+
+    # Fall back to absolute datetime
+    parts = re.split(r"\D+", s)
     parts = [p for p in parts if p]  # Remove empty strings
     if len(parts) != 6:
         raise ValueError(
-            f"Expected 6 components (YYYY MM DD HH MM SS), got {len(parts)}: {s}"
+            f"Expected 6 components (YYYY MM DD HH MM SS) or relative time (e.g., '2 hours'), got: {s}"
         )
     year, month, day, hour, minute, second = (int(p) for p in parts)
     if year < 100:
@@ -360,7 +381,7 @@ def main() -> None:
         "--since",
         type=str,
         default=None,
-        help="Scrape logs since this time (YYYY-MM-DD HH:MM:SS, delimiters flexible).",
+        help="Scrape logs since time: relative ('2 hours', '30m') or absolute ('2026-01-04 10:30:00').",
     )
     parser.add_argument(
         "--all",
