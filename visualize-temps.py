@@ -298,9 +298,6 @@ def plot_data(
 
     fig, ax1 = plt.subplots(figsize=(14, 7))
 
-    # Downsample markers to ~200 points max
-    marker_every = max(1, len(dates) // 200)
-
     # Plot temps on left y-axis
     cmap = plt.get_cmap("tab10")
     colors_temp = [cmap(i / len(devices)) for i in range(len(devices))]
@@ -312,9 +309,6 @@ def plot_data(
             color=color,
             alpha=0.8,
             linewidth=0.8,
-            marker=".",
-            markersize=2,
-            markevery=marker_every,
         )
 
     ax1.set_xlabel("Time")
@@ -335,9 +329,6 @@ def plot_data(
             color=color,
             linestyle="--",
             linewidth=1,
-            marker=".",
-            markersize=2,
-            markevery=marker_every,
         )
 
     ax2.set_ylabel("Fan Speed (%)")
