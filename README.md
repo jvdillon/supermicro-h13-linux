@@ -270,7 +270,7 @@ Summary of differences:
 | Device multizone | One device can drive multiple zones | Each controller owns one zone, no overlap |
 | Zone arbitration | Max speed wins across all devices per zone | N/A (single controller per zone) |
 | Curves | Piecewise-constant with arbitrary breakpoints | Linear min/max interpolation |
-| Temp hysteresis | Deadband | Deadband ("Sensitivity") |
+| Temp hysteresis | Deadband | Deadband (aka "Sensitivity") |
 | Time hysteresis | Min hold: temp must stay low for N seconds (true hysteresis) | Delay after speed change |
 | Config | CLI flags with sensible defaults | INI config file required |
 | Complexity | ~1050 lines | ~3500 lines |
