@@ -238,7 +238,9 @@ def merge_data(
     return result
 
 
-def plot_data(data: dict[str, np.ndarray], path: Path, since: float | None = None) -> None:
+def plot_data(
+    data: dict[str, np.ndarray], path: Path, since: float | None = None
+) -> None:
     """Generate plot with temps and fan speeds.
 
     Args:
@@ -317,11 +319,25 @@ def plot_data(data: dict[str, np.ndarray], path: Path, since: float | None = Non
     ax2.set_ylim(0, 100)
     ax2.set_yticks(range(0, 101, 10))
 
-    # Format x-axis with hourly ticks
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
-    ax1.xaxis.set_major_locator(mdates.HourLocator())
+    # Set x-axis limits and ticks
     if since is not None:
-        ax1.set_xlim(left=datetime.fromtimestamp(since))  # pyright: ignore[reportArgumentType]
+        xlim_left = datetime.fromtimestamp(since)
+    else:
+        xlim_left = dates[0]
+    xlim_right = dates[-1]
+    ax1.set_xlim(xlim_left, xlim_right)  # pyright: ignore[reportArgumentType]
+
+    # Choose tick interval to get ~18 ticks with nice round minutes
+    range_minutes = (xlim_right - xlim_left).total_seconds() / 60
+    ideal_interval = range_minutes / 18
+    # Round to nearest "nice" interval
+    nice_intervals = [5, 10, 15, 30, 60, 120, 180, 360, 720, 1440]
+    interval = min(nice_intervals, key=lambda x: abs(x - ideal_interval))
+    if interval >= 60:
+        ax1.xaxis.set_major_locator(mdates.HourLocator(interval=interval // 60))
+    else:
+        ax1.xaxis.set_major_locator(mdates.MinuteLocator(interval=interval))
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d %H:%M"))
     fig.autofmt_xdate()
 
     # Combined legend

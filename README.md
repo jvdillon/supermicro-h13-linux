@@ -65,10 +65,13 @@ View options:
 Override temperature mappings via command line:
 
 ```bash
-# Format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
+# Format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST_CEL[:HYST_SEC]],...
+# HYST_CEL = temp hysteresis (C), HYST_SEC = time hysteresis (s)
+# Empty value uses default: 70:80::60 = default temp hyst, 60s time hyst
 --speeds gpu=50:20,70:50,85:100           # All GPUs, all zones
 --speeds gpu0-zone1=60:30,80:100          # GPU 0, zone 1 only
---speeds hdd=                              # Disable HDD control
+--speeds gpu=70:80:5:30                   # 5C temp hyst, 30s time hyst
+--speeds hdd=                             # Disable HDD control
 ```
 
 To modify the installed service:

@@ -90,15 +90,32 @@ class MockHardware:
 class TestFanSpeedConfigParse:
     def test_basic(self) -> None:
         _, mapping = FanSpeed.Config._parse_speeds("x=40:15,60:30,80:100")
-        assert mapping == ((40.0, 15.0, None), (60.0, 30.0, None), (80.0, 100.0, None))
+        assert mapping == (
+            (40.0, 15.0, None, None),
+            (60.0, 30.0, None, None),
+            (80.0, 100.0, None, None),
+        )
 
     def test_sorts_by_temp(self) -> None:
         _, mapping = FanSpeed.Config._parse_speeds("x=80:100,40:15,60:30")
-        assert mapping == ((40.0, 15.0, None), (60.0, 30.0, None), (80.0, 100.0, None))
+        assert mapping == (
+            (40.0, 15.0, None, None),
+            (60.0, 30.0, None, None),
+            (80.0, 100.0, None, None),
+        )
 
-    def test_with_hysteresis(self) -> None:
+    def test_with_hysteresis_celsius(self) -> None:
         _, mapping = FanSpeed.Config._parse_speeds("x=40:15:3,80:100:5")
-        assert mapping == ((40.0, 15.0, 3.0), (80.0, 100.0, 5.0))
+        assert mapping == ((40.0, 15.0, 3.0, None), (80.0, 100.0, 5.0, None))
+
+    def test_with_hysteresis_full(self) -> None:
+        _, mapping = FanSpeed.Config._parse_speeds("x=40:15:3:20,80:100:5:60")
+        assert mapping == ((40.0, 15.0, 3.0, 20.0), (80.0, 100.0, 5.0, 60.0))
+
+    def test_with_hysteresis_seconds_empty_celsius(self) -> None:
+        # Empty hyst_c placeholder: 70:80::60 means default temp hyst, 60s time hyst
+        _, mapping = FanSpeed.Config._parse_speeds("x=40:15::30,80:100::60")
+        assert mapping == ((40.0, 15.0, None, 30.0), (80.0, 100.0, None, 60.0))
 
     def test_empty_returns_none(self) -> None:
         _, mapping = FanSpeed.Config._parse_speeds("x=")
@@ -112,18 +129,22 @@ class TestFanSpeedConfigParse:
         with pytest.raises(ValueError, match="Speed must be 0-100"):
             FanSpeed.Config._parse_speeds("x=40:15,80:150")
 
-    def test_invalid_hysteresis(self) -> None:
-        with pytest.raises(ValueError, match="Hysteresis must be >= 0"):
+    def test_invalid_hysteresis_celsius(self) -> None:
+        with pytest.raises(ValueError, match="Hysteresis celsius must be >= 0"):
             FanSpeed.Config._parse_speeds("x=40:15:-5,80:100:5")
+
+    def test_invalid_hysteresis_seconds(self) -> None:
+        with pytest.raises(ValueError, match="Hysteresis seconds must be >= 0"):
+            FanSpeed.Config._parse_speeds("x=40:15:5:-30,80:100:5:60")
 
     def test_invalid_format(self) -> None:
         with pytest.raises(ValueError, match="Invalid point format"):
-            FanSpeed.Config._parse_speeds("x=40:15:5:extra,80:100")
+            FanSpeed.Config._parse_speeds("x=40:15:5:10:extra,80:100")
 
     def test_gpu_zone(self) -> None:
         key, mapping = FanSpeed.Config._parse_speeds("gpu-zone=40:15,80:100")
         assert key == ("gpu", -1, -1)
-        assert mapping == ((40.0, 15.0, None), (80.0, 100.0, None))
+        assert mapping == ((40.0, 15.0, None, None), (80.0, 100.0, None, None))
 
     def test_gpu_zone0(self) -> None:
         key, _ = FanSpeed.Config._parse_speeds("gpu-zone0=40:15,80:100")
@@ -154,32 +175,38 @@ class TestFanSpeedConfigParse:
 class TestFanSpeedGet:
     def test_exact_match(self) -> None:
         m = FanSpeed.Config(
-            speeds={("gpu", 0, 1): ((50.0, 20.0, None), (80.0, 100.0, None))}
+            speeds={
+                ("gpu", 0, 1): ((50.0, 20.0, None, None), (80.0, 100.0, None, None))
+            }
         ).setup()
         result = m.get("gpu", 0, 1)
         assert result is not None
         mapping, key = result
-        assert mapping == ((50.0, 20.0, None), (80.0, 100.0, None))
+        assert mapping == ((50.0, 20.0, None, None), (80.0, 100.0, None, None))
         assert key == ("gpu", 0, 1)
 
     def test_fallback_to_all_zones(self) -> None:
         m = FanSpeed.Config(
-            speeds={("gpu", 0, -1): ((50.0, 20.0, None), (80.0, 100.0, None))}
+            speeds={
+                ("gpu", 0, -1): ((50.0, 20.0, None, None), (80.0, 100.0, None, None))
+            }
         ).setup()
         result = m.get("gpu", 0, 1)
         assert result is not None
         mapping, key = result
-        assert mapping == ((50.0, 20.0, None), (80.0, 100.0, None))
+        assert mapping == ((50.0, 20.0, None, None), (80.0, 100.0, None, None))
         assert key == ("gpu", 0, -1)  # matched wildcard zone
 
     def test_fallback_to_all_devices(self) -> None:
         m = FanSpeed.Config(
-            speeds={("gpu", -1, 1): ((50.0, 20.0, None), (80.0, 100.0, None))}
+            speeds={
+                ("gpu", -1, 1): ((50.0, 20.0, None, None), (80.0, 100.0, None, None))
+            }
         ).setup()
         result = m.get("gpu", 0, 1)
         assert result is not None
         mapping, key = result
-        assert mapping == ((50.0, 20.0, None), (80.0, 100.0, None))
+        assert mapping == ((50.0, 20.0, None, None), (80.0, 100.0, None, None))
         assert key == ("gpu", -1, 1)  # matched wildcard device
 
     def test_default_gpu(self) -> None:
@@ -196,46 +223,121 @@ class TestFanSpeedGet:
 class TestFanSpeedLookup:
     @pytest.fixture
     def m(self) -> FanSpeed:
-        return FanSpeed.Config(hysteresis_celsius=5.0).setup()
+        return FanSpeed.Config(hysteresis_celsius=5.0, hysteresis_seconds=0.0).setup()
 
     def test_below_min(self, m: FanSpeed) -> None:
-        mapping = ((40.0, 15.0, None), (80.0, 100.0, None))
-        speed, thresh = m.lookup(30, mapping)
+        mapping = ((40.0, 15.0, None, None), (80.0, 100.0, None, None))
+        speed, thresh, drop_time = m.lookup(30, mapping)
         assert speed == 15.0
         assert thresh == 40.0  # returns first threshold
+        assert drop_time is None
 
     def test_above_max(self, m: FanSpeed) -> None:
-        mapping = ((40.0, 15.0, None), (80.0, 100.0, None))
-        speed, thresh = m.lookup(90, mapping)
+        mapping = ((40.0, 15.0, None, None), (80.0, 100.0, None, None))
+        speed, thresh, drop_time = m.lookup(90, mapping)
         assert speed == 100.0
         assert thresh == 80.0
+        assert drop_time is None
 
     def test_between_thresholds(self, m: FanSpeed) -> None:
-        mapping = ((40.0, 15.0, None), (80.0, 100.0, None))
-        speed, thresh = m.lookup(60, mapping)
+        mapping = ((40.0, 15.0, None, None), (80.0, 100.0, None, None))
+        speed, thresh, drop_time = m.lookup(60, mapping)
         assert speed == 15.0  # piecewise constant: 60 >= 40, < 80
         assert thresh == 40.0
+        assert drop_time is None
 
     def test_hysteresis_rising(self, m: FanSpeed) -> None:
-        mapping = ((40.0, 15.0, 5.0), (70.0, 50.0, 5.0), (80.0, 100.0, 5.0))
+        mapping = (
+            (40.0, 15.0, 5.0, None),
+            (70.0, 50.0, 5.0, None),
+            (80.0, 100.0, 5.0, None),
+        )
         # Rising from below - active at 40, now at 75 -> should go to 70 threshold
-        speed, thresh = m.lookup(75, mapping, active_threshold=40.0)
+        speed, thresh, drop_time = m.lookup(75, mapping, active_threshold=40.0)
         assert speed == 50.0
         assert thresh == 70.0
+        assert drop_time is None
 
     def test_hysteresis_falling_stays(self, m: FanSpeed) -> None:
-        mapping = ((40.0, 15.0, 5.0), (70.0, 50.0, 5.0), (80.0, 100.0, 5.0))
+        mapping = (
+            (40.0, 15.0, 5.0, None),
+            (70.0, 50.0, 5.0, None),
+            (80.0, 100.0, 5.0, None),
+        )
         # Falling from 80 to 68 - should stay at 70 threshold (68 >= 70-5=65)
-        speed, thresh = m.lookup(68, mapping, active_threshold=70.0)
+        speed, thresh, drop_time = m.lookup(68, mapping, active_threshold=70.0)
         assert speed == 50.0
         assert thresh == 70.0
+        assert drop_time is None  # Not in drop zone yet
 
     def test_hysteresis_falling_drops(self, m: FanSpeed) -> None:
-        mapping = ((40.0, 15.0, 5.0), (70.0, 50.0, 5.0), (80.0, 100.0, 5.0))
+        mapping = (
+            (40.0, 15.0, 5.0, None),
+            (70.0, 50.0, 5.0, None),
+            (80.0, 100.0, 5.0, None),
+        )
         # Falling from 70 to 64 - should drop to 40 threshold (64 < 70-5=65)
-        speed, thresh = m.lookup(64, mapping, active_threshold=70.0)
+        # With hysteresis_seconds=0, drops immediately
+        speed, thresh, drop_time = m.lookup(64, mapping, active_threshold=70.0)
         assert speed == 15.0
         assert thresh == 40.0
+        assert drop_time is None
+
+    def test_time_hysteresis_starts_timer(self) -> None:
+        """When temp enters drop zone, timer starts and speed stays high."""
+        m = FanSpeed(
+            FanSpeed.Config(hysteresis_celsius=0.0, hysteresis_seconds=30.0, speeds={})
+        )
+        mapping = ((40.0, 15.0, 5.0, 30.0), (70.0, 50.0, 5.0, 30.0))
+        # Temp 64 < 70-5=65, enters drop zone, but timer just started
+        speed, thresh, drop_time = m.lookup(
+            64, mapping, active_threshold=70.0, time_in_drop_zone=None, current_time=100
+        )
+        assert speed == 50.0  # Stay at active speed
+        assert thresh == 70.0  # Stay at active threshold
+        assert drop_time == 100  # Timer started
+
+    def test_time_hysteresis_waiting(self) -> None:
+        """While waiting for time hysteresis, stay at high speed."""
+        m = FanSpeed(
+            FanSpeed.Config(hysteresis_celsius=0.0, hysteresis_seconds=30.0, speeds={})
+        )
+        mapping = ((40.0, 15.0, 5.0, 30.0), (70.0, 50.0, 5.0, 30.0))
+        # 15 seconds into 30s wait
+        speed, thresh, drop_time = m.lookup(
+            64, mapping, active_threshold=70.0, time_in_drop_zone=100, current_time=115
+        )
+        assert speed == 50.0
+        assert thresh == 70.0
+        assert drop_time == 100  # Timer preserved
+
+    def test_time_hysteresis_expires(self) -> None:
+        """When time hysteresis expires, drop to lower speed."""
+        m = FanSpeed(
+            FanSpeed.Config(hysteresis_celsius=0.0, hysteresis_seconds=30.0, speeds={})
+        )
+        mapping = ((40.0, 15.0, 5.0, 30.0), (70.0, 50.0, 5.0, 30.0))
+        # 30+ seconds elapsed
+        speed, thresh, drop_time = m.lookup(
+            64, mapping, active_threshold=70.0, time_in_drop_zone=100, current_time=130
+        )
+        assert speed == 15.0  # Dropped
+        assert thresh == 40.0  # New threshold
+        assert drop_time is None  # Timer reset
+
+    def test_time_hysteresis_reset_on_spike(self) -> None:
+        """Temp spike resets the timer."""
+        m = FanSpeed(
+            FanSpeed.Config(hysteresis_celsius=0.0, hysteresis_seconds=30.0, speeds={})
+        )
+        mapping = ((40.0, 15.0, 5.0, 30.0), (70.0, 50.0, 5.0, 30.0))
+        # Temp goes back above drop zone threshold (66 >= 65)
+        speed, thresh, drop_time = m.lookup(
+            66, mapping, active_threshold=70.0, time_in_drop_zone=100, current_time=115
+        )
+        assert speed == 50.0
+        assert thresh == 70.0
+        assert drop_time is None  # Timer reset
 
 
 class TestFanDaemon:
@@ -244,32 +346,33 @@ class TestFanDaemon:
         return FanSpeed.Config(
             speeds={
                 ("cpu", -1, -1): (
-                    (0.0, 15.0, None),
-                    (40.0, 15.0, None),
-                    (80.0, 100.0, None),
+                    (0.0, 15.0, None, None),
+                    (40.0, 15.0, None, None),
+                    (80.0, 100.0, None, None),
                 ),
                 ("gpu", -1, -1): (
-                    (0.0, 15.0, None),
-                    (40.0, 15.0, None),
-                    (80.0, 100.0, None),
+                    (0.0, 15.0, None, None),
+                    (40.0, 15.0, None, None),
+                    (80.0, 100.0, None, None),
                 ),
                 ("ram", -1, -1): (
-                    (0.0, 15.0, None),
-                    (40.0, 15.0, None),
-                    (80.0, 100.0, None),
+                    (0.0, 15.0, None, None),
+                    (40.0, 15.0, None, None),
+                    (80.0, 100.0, None, None),
                 ),
                 ("hdd", -1, -1): (
-                    (0.0, 15.0, None),
-                    (25.0, 15.0, None),
-                    (50.0, 100.0, None),
+                    (0.0, 15.0, None, None),
+                    (25.0, 15.0, None, None),
+                    (50.0, 100.0, None, None),
                 ),
                 ("nvme", -1, -1): (
-                    (0.0, 15.0, None),
-                    (35.0, 15.0, None),
-                    (70.0, 100.0, None),
+                    (0.0, 15.0, None, None),
+                    (35.0, 15.0, None, None),
+                    (70.0, 100.0, None, None),
                 ),
             },
             hysteresis_celsius=5.0,
+            hysteresis_seconds=0.0,
         ).setup()
 
     @pytest.fixture
@@ -316,13 +419,14 @@ class TestFanDaemon:
         # Set up mapping with clear thresholds - use zone 0 specific keys to override defaults
         fan_speed = FanSpeed.Config(
             speeds={
-                ("cpu", -1, 0): ((40.0, 15.0, 5.0), (70.0, 50.0, 5.0)),
-                ("gpu", -1, 0): ((40.0, 15.0, 5.0), (70.0, 50.0, 5.0)),
-                ("ram", -1, 0): ((40.0, 15.0, 5.0), (70.0, 50.0, 5.0)),
-                ("hdd", -1, 0): ((25.0, 15.0, 5.0), (50.0, 100.0, 5.0)),
-                ("nvme", -1, 0): ((35.0, 15.0, 5.0), (70.0, 100.0, 5.0)),
+                ("cpu", -1, 0): ((40.0, 15.0, 5.0, None), (70.0, 50.0, 5.0, None)),
+                ("gpu", -1, 0): ((40.0, 15.0, 5.0, None), (70.0, 50.0, 5.0, None)),
+                ("ram", -1, 0): ((40.0, 15.0, 5.0, None), (70.0, 50.0, 5.0, None)),
+                ("hdd", -1, 0): ((25.0, 15.0, 5.0, None), (50.0, 100.0, 5.0, None)),
+                ("nvme", -1, 0): ((35.0, 15.0, 5.0, None), (70.0, 100.0, 5.0, None)),
             },
             hysteresis_celsius=5.0,
+            hysteresis_seconds=0.0,  # Disable time hysteresis for this test
         ).setup()
         daemon = FanDaemon.Config().setup(hardware, fan_speed)
         assert hardware.temps is not None
@@ -781,4 +885,4 @@ class TestEdgeCases:
     def test_parse_speeds_empty_part(self) -> None:
         # Test with empty part between commas
         _, mapping = FanSpeed.Config._parse_speeds("x=40:15,,80:100")
-        assert mapping == ((40.0, 15.0, None), (80.0, 100.0, None))
+        assert mapping == ((40.0, 15.0, None, None), (80.0, 100.0, None, None))

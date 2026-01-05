@@ -39,9 +39,9 @@ run_cmd = sensors.run_cmd
 
 log = logging.getLogger("fan-daemon")
 
-# (threshold_temp, fan_speed_percent, hysteresis_celsius)
-# hysteresis=None means use global default
-MappingPoint = tuple[float, float, float | None]
+# (threshold_temp, fan_speed_percent, hysteresis_celsius, hysteresis_seconds)
+# None means use global default
+MappingPoint = tuple[float, float, float | None, float | None]
 MappingKey = tuple[str, int, int]  # (device_type, device_idx, zone); -1 means "all"
 
 
@@ -261,64 +261,65 @@ class FanSpeed:
 
     @dataclasses.dataclass(slots=True, kw_only=True)
     class Config:
-        """Handles --speeds and --hysteresis_celsius flags."""
+        """Handles --speeds, --hysteresis_celsius, --hysteresis_seconds flags."""
 
         hysteresis_celsius: float = 5.0
+        hysteresis_seconds: float = 30.0
 
-        # (temp, speed, hysteresis) - hysteresis=None means use global default
+        # (temp, speed, hyst_celsius, hyst_seconds) - None means use global default
         # Throttle temps: CPU 100°C, GPU 90°C, RAM 85°C, HDD 70°C, NVMe 85°C
         # Generally we set 100% at 85% of throttle.
         speeds: dict[MappingKey, tuple[MappingPoint, ...] | None] = dataclasses.field(
             default_factory=lambda: {
                 # CPU: AMD EPYC 9555 - throttle 100°C (85%: 85°C)
                 ("cpu", -1, 0): (
-                    (0, 15, None),
-                    (60, 25, None),
-                    (70, 40, None),
-                    (80, 70, None),
-                    (85, 100, None),
+                    (0, 15, None, None),
+                    (60, 25, None, None),
+                    (70, 40, None, None),
+                    (80, 70, None, None),
+                    (85, 100, None, None),
                 ),
                 # RAM: DDR5 SK Hynix - max 85°C (85%: 72°C)
                 # Requires --ipmi-temps flag to enable RAM temp monitoring
                 # ("ram", -1, 0): (
-                #     (0, 15, None),
-                #     (50, 25, None),
-                #     (60, 40, None),
-                #     (68, 70, None),
-                #     (72, 100, None),
+                #     (0, 15, None, None),
+                #     (50, 25, None, None),
+                #     (60, 40, None, None),
+                #     (68, 70, None, None),
+                #     (72, 100, None, None),
                 # ),
                 # NVMe: WD Black SN8100 - max 85°C (85%: 72°C)
                 ("nvme", -1, 0): (
-                    (0, 15, None),
-                    (50, 25, None),
-                    (58, 40, None),
-                    (65, 70, None),
-                    (72, 100, None),
+                    (0, 15, None, None),
+                    (50, 25, None, None),
+                    (58, 40, None, None),
+                    (65, 70, None, None),
+                    (72, 100, None, None),
                 ),
                 # HDD: Seagate IronWolf Pro - max 70°C (85%: 60°C)
                 ("hdd", -1, 0): (
-                    (0, 15, None),
-                    (42, 25, None),
-                    (48, 40, None),
-                    (54, 70, None),
-                    (60, 100, None),
+                    (0, 15, None, None),
+                    (42, 25, None, None),
+                    (48, 40, None, None),
+                    (54, 70, None, None),
+                    (60, 100, None, None),
                 ),
                 # GPU: NVIDIA RTX 5090 - throttle 90°C (85%: 77°C)
                 # Zone 0 (case fans): ramp earlier to help GPU cooling
                 ("gpu", -1, 0): (
-                    (0, 15, None),
-                    (40, 25, None),
-                    (50, 40, None),
-                    (60, 60, None),
-                    (70, 80, None),
-                    (80, 100, None),
+                    (0, 15, None, None),
+                    (40, 25, None, None),
+                    (50, 40, None, None),
+                    (60, 60, None, None),
+                    (70, 80, None, None),
+                    (80, 100, None, None),
                 ),
                 # Zone 1 (GPU fans): aggressive - 100% above 50°C
                 ("gpu", -1, 1): (
-                    (0, 15, None),
-                    (35, 40, None),
-                    (45, 80, None),
-                    (50, 100, None),
+                    (0, 15, None, None),
+                    (35, 40, None, None),
+                    (45, 80, None, None),
+                    (50, 100, None, None),
                 ),
             }
         )
@@ -335,7 +336,13 @@ class FanSpeed:
                 "--hysteresis_celsius",
                 type=type(defaults.hysteresis_celsius),
                 default=defaults.hysteresis_celsius,
-                help="Hysteresis (C) for falling temps.",
+                help="Temp hysteresis (C): stay high until temp drops this far below threshold.",
+            )
+            _ = argparser.add_argument(
+                "--hysteresis_seconds",
+                type=type(defaults.hysteresis_seconds),
+                default=defaults.hysteresis_seconds,
+                help="Time hysteresis (s): temp must stay below threshold for this long before dropping.",
             )
             _ = argparser.add_argument(
                 "--speeds",
@@ -351,7 +358,10 @@ class FanSpeed:
             args: argparse.Namespace,
         ) -> FanSpeed.Config:
             """Create Config from parsed arguments."""
-            config = cls(hysteresis_celsius=cast(float, args.hysteresis_celsius))
+            config = cls(
+                hysteresis_celsius=cast(float, args.hysteresis_celsius),
+                hysteresis_seconds=cast(float, args.hysteresis_seconds),
+            )
             for spec in cast(list[str], args.speeds or []):
                 try:
                     key, speeds = cls._parse_speeds(spec)
@@ -371,7 +381,7 @@ class FanSpeed:
             Empty value (e.g. 'gpu=') returns None mapping (disables device).
             """
             if "=" not in spec:
-                raise ValueError("Invalid mapping spec (missing '='): %s" % spec)
+                raise ValueError(f"Invalid mapping spec (missing '='): {spec}")
             key_part, value_part = spec.split("=", 1)
 
             # Parse key
@@ -380,7 +390,7 @@ class FanSpeed:
                 key_part.strip().lower(),
             )
             if not m:
-                raise ValueError("Invalid mapping key format: %s" % key_part)
+                raise ValueError(f"Invalid mapping key format: {key_part}")
             key: MappingKey = (
                 m.group(1),
                 int(m.group(2)) if m.group(2) else -1,
@@ -397,17 +407,25 @@ class FanSpeed:
                 if not part:
                     continue
                 pieces = part.split(":")
-                if len(pieces) < 2 or len(pieces) > 3:
+                if len(pieces) < 2 or len(pieces) > 4:
                     raise ValueError(
-                        "Invalid point format: %s (expected temp:speed[:hyst])" % part
+                        f"Invalid point format: {part} (expected temp:speed[:hyst_c[:hyst_s]])"
                     )
                 temp, speed = float(pieces[0]), float(pieces[1])
-                hyst: float | None = float(pieces[2]) if len(pieces) == 3 else None
+                # Empty string means use default (None)
+                hyst_c: float | None = (
+                    float(pieces[2]) if len(pieces) > 2 and pieces[2] else None
+                )
+                hyst_s: float | None = (
+                    float(pieces[3]) if len(pieces) > 3 and pieces[3] else None
+                )
                 if not 0 <= speed <= 100:
-                    raise ValueError("Speed must be 0-100, got %s" % speed)
-                if hyst is not None and hyst < 0:
-                    raise ValueError("Hysteresis must be >= 0, got %s" % hyst)
-                points.append((temp, speed, hyst))
+                    raise ValueError(f"Speed must be 0-100, got {speed}")
+                if hyst_c is not None and hyst_c < 0:
+                    raise ValueError(f"Hysteresis celsius must be >= 0, got {hyst_c}")
+                if hyst_s is not None and hyst_s < 0:
+                    raise ValueError(f"Hysteresis seconds must be >= 0, got {hyst_s}")
+                points.append((temp, speed, hyst_c, hyst_s))
             if len(points) < 2:
                 raise ValueError("Mapping must have at least 2 points")
             points.sort(key=lambda pp: pp[0])
@@ -444,50 +462,78 @@ class FanSpeed:
         temp: float,
         mapping: tuple[MappingPoint, ...],
         active_threshold: float | None = None,
-    ) -> tuple[float, float]:
-        """Piecewise constant lookup with hysteresis.
+        time_in_drop_zone: float | None = None,
+        current_time: float | None = None,
+    ) -> tuple[float, float, float | None]:
+        """Piecewise constant lookup with temperature and time hysteresis.
 
-        Returns (speed, new_active_threshold).
+        Returns (speed, new_active_threshold, new_time_in_drop_zone).
 
-        When temp is falling (below active_threshold), stays at current threshold
-        until temp drops below (threshold - hysteresis).
+        Dropping to a lower speed requires:
+          temp < (threshold - hysteresis_celsius) for >= hysteresis_seconds
+
+        Args:
+            temp: Current temperature.
+            mapping: Speed mapping points.
+            active_threshold: Current active threshold (from previous call).
+            time_in_drop_zone: Timestamp when temp first entered drop zone (or None).
+            current_time: Current timestamp (defaults to time.time()).
         """
+        if current_time is None:
+            current_time = time.time()
+
         # Find normal threshold (highest t where temp >= t)
         normal_idx = -1
-        for i, (t, _, _) in enumerate(mapping):
+        for i, (t, _, _, _) in enumerate(mapping):
             if temp >= t:
                 normal_idx = i
 
         if normal_idx < 0:
             # Below all thresholds, use first speed
-            return mapping[0][1], mapping[0][0]
+            return mapping[0][1], mapping[0][0], None
 
         normal_thresh = mapping[normal_idx][0]
         normal_speed = mapping[normal_idx][1]
 
         if active_threshold is None:
-            return normal_speed, normal_thresh
+            return normal_speed, normal_thresh, None
 
         # Find index of active threshold
         active_idx = -1
-        for i, (t, _, _) in enumerate(mapping):
+        for i, (t, _, _, _) in enumerate(mapping):
             if t == active_threshold:
                 active_idx = i
                 break
 
         if active_idx < 0 or normal_idx >= active_idx:
-            # Rising or same threshold, use normal
-            return normal_speed, normal_thresh
+            # Rising or same threshold, use normal (reset drop zone timer)
+            return normal_speed, normal_thresh, None
 
-        # Falling - check if we should drop
-        active_t, active_s, active_h = mapping[active_idx]
-        hyst = self.config.hysteresis_celsius if active_h is None else active_h
-        if temp < active_t - hyst:
-            # Drop to new threshold
-            return normal_speed, normal_thresh
+        # Falling - check both hysteresis conditions
+        active_t, active_s, active_hc, active_hs = mapping[active_idx]
+        hyst_c = self.config.hysteresis_celsius if active_hc is None else active_hc
+        hyst_s = self.config.hysteresis_seconds if active_hs is None else active_hs
+
+        # Check temp hysteresis
+        temp_below = temp < active_t - hyst_c
+
+        if not temp_below:
+            # Not in drop zone - reset timer, stay at active threshold
+            return active_s, active_t, None
+
+        # Temp is below - check/update time tracking
+        if time_in_drop_zone is None:
+            # Just entered drop zone - start timer
+            time_in_drop_zone = current_time
+
+        time_elapsed = current_time - time_in_drop_zone
+
+        if time_elapsed >= hyst_s:
+            # Both conditions met - drop to new threshold
+            return normal_speed, normal_thresh, None
         else:
-            # Stay at active threshold
-            return active_s, active_t
+            # Time condition not met - stay at active threshold, keep timer
+            return active_s, active_t, time_in_drop_zone
 
 
 @final
@@ -544,6 +590,7 @@ class FanDaemon:
         self.speed = speed
         self.running = False
         self.active_thresholds: dict[tuple[str, int, int], float] = {}
+        self.time_in_drop_zone: dict[tuple[str, int, int], float | None] = {}
         self.last_logged_speeds: dict[int, int] = {}
         self.last_heartbeat = 0.0
 
@@ -590,6 +637,7 @@ class FanDaemon:
             log.error("Failed to read temps, setting fail-safe")
             _ = self.hardware.set_fail_safe()
             self.active_thresholds.clear()
+            self.time_in_drop_zone.clear()
             self.last_logged_speeds.clear()
             return
 
@@ -599,6 +647,7 @@ class FanDaemon:
             if not self.hardware.set_zone_speed(zone, speed):
                 _ = self.hardware.set_fail_safe()
                 self.active_thresholds.clear()
+                self.time_in_drop_zone.clear()
                 self.last_logged_speeds.clear()
                 return
 
@@ -686,7 +735,10 @@ class FanDaemon:
                     mapping, matched_key = result
                     is_wildcard = matched_key[2] == -1
                     active_thresh = self.active_thresholds.get((name, idx, zone))
-                    spd, _ = self.speed.lookup(temp, mapping, active_thresh)
+                    drop_time = self.time_in_drop_zone.get((name, idx, zone))
+                    spd, _, _ = self.speed.lookup(
+                        temp, mapping, active_thresh, drop_time
+                    )
                     zone_results.append((int(spd), is_wildcard))
                 else:
                     zone_results.append(None)
@@ -752,19 +804,27 @@ class FanDaemon:
         temps: dict[str, tuple[int, ...] | None],
     ) -> dict[int, tuple[int, str, int]]:
         """Compute fan speed per zone. Returns {zone: (speed, trigger, temp)}."""
+        current_time = time.time()
         results: dict[int, tuple[int, str, int]] = {}
         for zone in self.hardware.get_zones():
-            # (speed, trigger_name, temp, dev_name, dev_idx, new_thresh)
-            candidates: list[tuple[float, str, int, str, int, float]] = []
+            # (speed, trigger_name, temp, dev_name, dev_idx, new_thresh, new_drop_time)
+            candidates: list[tuple[float, str, int, str, int, float, float | None]] = []
             for name, values in temps.items():
                 for idx, temp in enumerate(values or ()):
                     if (result := self.speed.get(name, idx, zone)) is not None:
                         mapping, _ = result
                         key = (name, idx, zone)
                         active_thresh = self.active_thresholds.get(key)
-                        spd, new_thresh = self.speed.lookup(
-                            temp, mapping, active_thresh
+                        drop_time = self.time_in_drop_zone.get(key)
+                        spd, new_thresh, new_drop_time = self.speed.lookup(
+                            temp,
+                            mapping,
+                            active_thresh,
+                            drop_time,
+                            current_time,
                         )
+                        # Update time tracking for this device
+                        self.time_in_drop_zone[key] = new_drop_time
                         candidates.append(
                             (
                                 spd,
@@ -773,11 +833,13 @@ class FanDaemon:
                                 name,
                                 idx,
                                 new_thresh,
+                                new_drop_time,
                             )
                         )
             if candidates:
-                spd, trigger, temp, dev_name, dev_idx, new_thresh = max(
-                    candidates, key=lambda x: x[0]
+                spd, trigger, temp, dev_name, dev_idx, new_thresh, _ = max(
+                    candidates,
+                    key=lambda x: x[0],
                 )
                 self.active_thresholds[(dev_name, dev_idx, zone)] = new_thresh
                 results[zone] = (int(spd), trigger, temp)
@@ -792,15 +854,20 @@ def main() -> None:
         description="Fan daemon for server motherboards",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Mapping format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST],TEMP:SPEED[:HYST],...
-  HYST is optional per-point hysteresis (default: --hysteresis_celsius value).
-  Hysteresis prevents oscillation: fans stay high until temp drops HYST below threshold.
+Mapping format: DEVICE[N][-zone[M]]=TEMP:SPEED[:HYST_C[:HYST_S]],...
+  HYST_C: temp hysteresis in Celsius (default: --hysteresis_celsius)
+  HYST_S: time hysteresis in seconds (default: --hysteresis_seconds)
+  Empty value uses default: 70:80::60 means default temp hyst, 60s time hyst.
+
+  Dropping requires: Temp < (threshold - HYST_C) for at least HYST_S seconds
 
   Examples:
     --speeds gpu=50:15,85:100            All GPUs, all zones
     --speeds gpu-zone0=50:15,85:100      All GPUs, zone 0 only
     --speeds gpu0-zone1=60:20,85:100     GPU #0, zone 1 only
-    --speeds gpu=50:15:3,70:50:5         Custom hysteresis per point
+    --speeds gpu=50:15:3,70:50:5         Custom temp hysteresis per point
+    --speeds gpu=70:80:5:60              5C temp hyst, 60s time hyst
+    --speeds gpu=70:80::60               Default temp hyst, 60s time hyst
     --speeds hdd=                        Disable HDD mappings
 
   Precedence (most specific wins):
