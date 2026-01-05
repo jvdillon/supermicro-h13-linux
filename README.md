@@ -1,4 +1,4 @@
-# Supermicro Motherboard Linux Setup
+# Managing Supermicro Temps/Fans
 
 Fan control and IPMI configuration for server motherboards running Linux.
 Tested on Supermicro [H13-series (H13SSL-N,
