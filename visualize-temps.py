@@ -11,6 +11,7 @@ Usage:
     ./visualize-temps.py --since "2 hours"  # scrape last 2 hours (relative)
     ./visualize-temps.py --since "2026-01-04 10:30:00"  # scrape since time (absolute)
     ./visualize-temps.py --npz data.npz     # load existing npz, skip collection
+    ./visualize-temps.py --no-plot          # scrape and save, skip plot
 """
 
 from __future__ import annotations
@@ -409,6 +410,12 @@ def main() -> None:
         default=DEFAULT_PNG,
         help=f"Output png path (default: {DEFAULT_PNG}).",
     )
+    parser.add_argument(
+        "--no-plot",
+        dest="plot",
+        action="store_false",
+        help="Skip plot generation (just scrape and save data).",
+    )
     args = parser.parse_args()
 
     # Parse --since if provided (used for both scraping and plot xlim)
@@ -463,7 +470,8 @@ def main() -> None:
             save_npz(data, args.output)
 
     # Generate plot (since_ts sets xlim if provided)
-    plot_data(data, args.png, since=since_ts)
+    if args.plot:
+        plot_data(data, args.png, since=since_ts)
 
 
 if __name__ == "__main__":
