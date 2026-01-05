@@ -6,6 +6,8 @@ H13SSL-NT)](https://www.supermicro.com/en/products/motherboard/h13ssl-n) but
 extensible to other boards and sensors via the `Hardware` and `Sensor`
 protocols.
 
+![example](example.png)
+
 ## Contents
 
 - `fan-control.sh` - Manual fan speed control
