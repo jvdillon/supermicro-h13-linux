@@ -247,8 +247,9 @@ ipmitool raw 0x30 0x70 0x66 0x01 0x01 0x28  # Zone 1 to 40%
 | HDD         | Seagate IronWolf Pro 12TB          |
 | OS          | Ubuntu 24.04                       |
 
-Should work on other H13-series boards with similar BMC firmware. Other boards
-and sensors can be supported by implementing the `Hardware` and `Sensor` protocols.
+Should work out-of-the-box on other H13-series boards with similar BMC
+firmware. Other boards and sensors can be supported by implementing the
+`Hardware` and `Sensor` protocols.
 
 ## Why not smfc?
 

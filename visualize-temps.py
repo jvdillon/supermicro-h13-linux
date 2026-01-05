@@ -40,7 +40,10 @@ def parse_flexible_datetime(s: str) -> float:
     s = s.strip().lower()
 
     # Try relative time first
-    relative_match = re.match(r"^(\d+)\s*(h|hour|hours|m|min|mins|minute|minutes|d|day|days|s|sec|secs|second|seconds)$", s)
+    relative_match = re.match(
+        r"^(\d+)\s*(h|hour|hours|m|min|mins|minute|minutes|d|day|days|s|sec|secs|second|seconds)$",
+        s,
+    )
     if relative_match:
         value = int(relative_match.group(1))
         unit = relative_match.group(2)
