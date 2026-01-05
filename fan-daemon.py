@@ -823,8 +823,9 @@ class FanDaemon:
                             drop_time,
                             current_time,
                         )
-                        # Update time tracking for this device
+                        # Update hysteresis state for this device
                         self.time_in_drop_zone[key] = new_drop_time
+                        self.active_thresholds[key] = new_thresh
                         candidates.append(
                             (
                                 spd,
@@ -837,11 +838,10 @@ class FanDaemon:
                             )
                         )
             if candidates:
-                spd, trigger, temp, dev_name, dev_idx, new_thresh, _ = max(
+                spd, trigger, temp, _, _, _, _ = max(
                     candidates,
                     key=lambda x: x[0],
                 )
-                self.active_thresholds[(dev_name, dev_idx, zone)] = new_thresh
                 results[zone] = (int(spd), trigger, temp)
             else:
                 # No mappings for this zone - fail-safe to 100%

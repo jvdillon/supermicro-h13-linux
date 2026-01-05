@@ -446,6 +446,55 @@ class TestFanDaemon:
         daemon.control_loop()
         assert hardware.zone_speeds[0] == 15
 
+    def test_hysteresis_non_winner_threshold_updated(
+        self, hardware: MockHardware
+    ) -> None:
+        """Non-winning devices must update their active_threshold.
+
+        Bug regression test: Previously, only the winning device's threshold
+        was updated, causing non-winners to keep stale thresholds and restart
+        their hysteresis timers every iteration.
+        """
+        fan_speed = FanSpeed.Config(
+            speeds={
+                # Two GPUs with same mapping
+                ("gpu", -1, 0): (
+                    (0.0, 15.0, 5.0, None),
+                    (70.0, 80.0, 5.0, None),
+                    (80.0, 100.0, 5.0, None),
+                ),
+            },
+            hysteresis_celsius=5.0,
+            hysteresis_seconds=0.0,  # Immediate drop for easier testing
+        ).setup()
+        daemon = FanDaemon.Config().setup(hardware, fan_speed)
+
+        # Both GPUs hot - both at 100%
+        hardware.temps = {"gpu": (85, 85)}
+        daemon.control_loop()
+        assert hardware.zone_speeds[0] == 100
+        # Both should have active_threshold=80
+        assert daemon.active_thresholds[("gpu", 0, 0)] == 80.0
+        assert daemon.active_thresholds[("gpu", 1, 0)] == 80.0
+
+        # gpu0 cools to 20C, gpu1 stays hot at 85C
+        # gpu0 should drop to threshold=0, gpu1 stays at threshold=80
+        hardware.temps = {"gpu": (20, 85)}
+        daemon.control_loop()
+        assert hardware.zone_speeds[0] == 100  # gpu1 wins
+        # CRITICAL: gpu0's threshold must be updated even though it lost
+        assert daemon.active_thresholds[("gpu", 0, 0)] == 0.0  # Dropped!
+        assert daemon.active_thresholds[("gpu", 1, 0)] == 80.0  # Still high
+
+        # Now gpu1 also cools - should drop immediately since gpu0 already dropped
+        hardware.temps = {"gpu": (20, 20)}
+        daemon.control_loop()
+        # With the bug, gpu0 would restart its timer here because its
+        # threshold was stale. With the fix, both are at threshold=0.
+        assert hardware.zone_speeds[0] == 15  # Both at low speed
+        assert daemon.active_thresholds[("gpu", 0, 0)] == 0.0
+        assert daemon.active_thresholds[("gpu", 1, 0)] == 0.0
+
     def test_control_loop_set_zone_speed_failure(
         self, daemon: FanDaemon, hardware: MockHardware
     ) -> None:
@@ -524,7 +573,7 @@ class TestSupermicroH13:
 
     @pytest.fixture
     def hw(self) -> SupermicroH13:
-        hw = SupermicroH13.Config().setup()
+        hw = SupermicroH13.Config(ipmi_write_delay_seconds=0.0).setup()
         hw._sensors = _make_mock_sensors()
         return hw
 
