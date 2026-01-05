@@ -252,7 +252,7 @@ ipmitool raw 0x30 0x70 0x66 0x01 0x01 0x28  # Zone 1 to 40%
 | CPU Cooler  | ARCTIC Freezer 4U-SP5                  |
 | Case Fans   | ARCTIC P14 Pro PST                     |
 | GPU Fans    | ARCTIC P12 Slim PWM PST                |
-| OS          | Ubuntu 24.04                           |
+| OS          | Ubuntu 24.04 LTS                       |
 
 This project should work out-of-the-box on other H13-series boards with similar
 BMC firmware. Other boards and sensors can be supported by implementing the
