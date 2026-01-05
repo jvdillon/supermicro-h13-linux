@@ -11,6 +11,29 @@ Fan control and IPMI configuration for Supermicro H13-series motherboards
 - `setup-ipmi-access.sh` - Configure unprivileged IPMI access
 - `setup-ipmi-limits.sh` - Disable low-RPM alarms and set sensor thresholds
 - `lshw.sh` - Hardware inventory script
+- `analyze-temps.py` - Temperature log analysis and plotting
+
+## Features
+
+**Manual control** - `fan-control.sh` provides simple per-zone fan speed control
+via IPMI raw commands. Set exact percentages or switch between BMC modes.
+
+**Automatic daemon** - `fan-daemon.py` monitors temperatures and adjusts fan speeds
+using piecewise-constant curves with configurable thresholds.
+
+- **Multi-zone**: Different curves for case fans (zone 0) vs GPU fans (zone 1).
+  One device can drive multiple zones with different curves.
+- **Dual hysteresis**: Temperature hysteresis (deadband) prevents oscillation at
+  thresholds. Time hysteresis (min hold) requires temps to stay low before
+  dropping speed, handling bursty workloads.
+- **Extensible sensors**: `Sensor` protocol for CPU (k10temp), GPU (nvidia-smi),
+  NVMe, HDD (smartctl), and IPMI. Add new sensors by implementing `get()`.
+- **Modular hardware**: `Hardware` protocol abstracts board-specific IPMI commands.
+  Port to other boards by implementing the interface.
+- **Fail-safe**: Any error sets fans to 100%.
+
+**Analysis** - `analyze-temps.py` scrapes journalctl logs, stores data in npz,
+and generates temperature/fan speed plots for tuning curves.
 
 ## Quick Start
 
