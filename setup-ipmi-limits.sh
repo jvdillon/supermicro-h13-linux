@@ -10,7 +10,7 @@ set -e
 # =============================================================================
 #
 # Motherboard:
-#   Supermicro H13SSL-N
+#   Supermicro Server Motherboard MBD-H13SSL-N Socket SP5 AMD 4th Gen EPYC™ 9004/9005 Genoa, Up to 3TB 3DS ECC RDIMM DDR5, ATX.
 #   https://www.supermicro.com/en/products/motherboard/h13ssl-n
 #   https://www.supermicro.com/manuals/motherboard/H13/MNL-2545.pdf
 #
@@ -39,6 +39,10 @@ set -e
 #   Seagate IronWolf Pro 12TB (ST12000NT001)
 #   https://www.seagate.com/products/nas-drives/ironwolf-hard-drive/
 #   https://www.seagate.com/www-content/datasheets/pdfs/ironwolf-pro-20tb-DS1914-18-2111US-en_US.pdf
+#
+# Case:
+#   Phanteks Enthoo Pro 2 Server Edition
+#   SSI-EEB Motherboard support, 11-PCI slots, 15x fan positions, Closed Panel with Mesh, Black
 #
 # FAN1: CPU cooler
 #   ARCTIC Freezer 4U-SP5
