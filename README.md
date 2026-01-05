@@ -239,18 +239,23 @@ ipmitool raw 0x30 0x70 0x66 0x01 0x01 0x28  # Zone 1 to 40%
 
 ## Tested Configuration
 
-| Component   | Model                              |
-|-------------|------------------------------------|
-| Motherboard | Supermicro H13SSL-N                |
-| CPU         | AMD EPYC 9555 (Turin/Zen 5)        |
-| RAM         | 4x32GB DDR5-5600 ECC (SK Hynix)    |
-| GPU         | 2x NVIDIA GeForce RTX 5090         |
-| NVMe        | WD Black SN8100 4TB                |
-| HDD         | Seagate IronWolf Pro 12TB          |
-| OS          | Ubuntu 24.04                       |
+| Component   | Model                                  |
+|-------------|----------------------------------------|
+| Motherboard | Supermicro H13SSL-N                    |
+| CPU         | AMD EPYC 9555 (Turin/Zen 5)            |
+| RAM         | 4x32GB DDR5-5600 ECC (SK Hynix)        |
+| GPU         | 2x NVIDIA GeForce RTX 5090             |
+| NVMe        | WD Black SN8100 4TB                    |
+| HDD         | Seagate IronWolf Pro 12TB              |
+| PSU         | Seasonic PRIME PX-1600 (1600W Platinum)|
+| Case        | Phanteks Enthoo Pro 2 Server Edition   |
+| CPU Cooler  | ARCTIC Freezer 4U-SP5                  |
+| Case Fans   | ARCTIC P14 Pro PST                     |
+| GPU Fans    | ARCTIC P12 Slim PWM PST                |
+| OS          | Ubuntu 24.04                           |
 
-Should work out-of-the-box on other H13-series boards with similar BMC
-firmware. Other boards and sensors can be supported by implementing the
+This project should work out-of-the-box on other H13-series boards with similar
+BMC firmware. Other boards and sensors can be supported by implementing the
 `Hardware` and `Sensor` protocols.
 
 ## Why not smfc?
@@ -261,10 +266,10 @@ for Supermicro boards and an excellent project.
 We opted to write our own because of the need for a fundamentally different
 control loop architecture. The key difference is zone overlap: for example, our
 GPUs drive both case fans (zone 0, gentle curve) and GPU-specific fans (zone 1,
-aggressive curve) simultaneously.
-smfc's architecture requires one controller per zone with no overlap. This
-difference makes sense because smfc appears to be written more with HDD in mind
-than GPU, the latter having significant case-wide temperature implications.
+aggressive curve) simultaneously. smfc's architecture requires one controller
+per zone with no overlap. This difference makes sense because smfc appears to
+be written more with HDD in mind than GPU, the latter having significant
+case-wide temperature implications.
 
 Summary of differences:
 
