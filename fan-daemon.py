@@ -272,11 +272,22 @@ class FanSpeed:
         speeds: dict[MappingKey, tuple[MappingPoint, ...] | None] = dataclasses.field(
             default_factory=lambda: {
                 # CPU: AMD EPYC 9555 - throttle 100°C (85%: 85°C)
+                # When CPU>32:
+                # | Quintile   | CPU0 |
+                # |------------|------|
+                # | Min        | 33°C |
+                # | 20th       | 43°C |
+                # | 40th       | 47°C |
+                # | 60th       | 48°C |
+                # | 80th       | 50°C |
+                # | Max        | 57°C |
                 ("cpu", -1, 0): (
                     (0, 15, None, None),
-                    (60, 25, None, None),
-                    (70, 40, None, None),
-                    (80, 70, None, None),
+                    (40, 25, None, None),
+                    (50, 30, None, None),
+                    (60, 35, None, None),
+                    (70, 50, None, None),
+                    (80, 80, None, None),
                     (85, 100, None, None),
                 ),
                 # RAM: DDR5 SK Hynix - max 85°C (85%: 72°C)
@@ -306,6 +317,15 @@ class FanSpeed:
                 ),
                 # GPU: NVIDIA RTX 5090 - throttle 90°C (85%: 77°C)
                 # Zone 0 (case fans): ramp earlier to help GPU cooling
+                # When GPU>40:
+                # | Quintile   | GPU0 | GPU1 |
+                # |------------|------|------|
+                # | Min        | 41°C | 41°C |
+                # | 20th       | 74°C | 72°C |
+                # | 40th       | 75°C | 80°C |
+                # | 60th       | 75°C | 82°C |
+                # | 80th       | 76°C | 83°C |
+                # | Max        | 77°C | 86°C |
                 ("gpu", -1, 0): (
                     (0, 15, None, 60.0),
                     (40, 25, None, 60.0),
@@ -318,8 +338,9 @@ class FanSpeed:
                 ("gpu", -1, 1): (
                     (0, 15, None, 60.0),
                     (35, 40, None, 60.0),
+                    (40, 60, None, 60.0),
                     (45, 80, None, 60.0),
-                    (50, 100, None, 60.0),
+                    (50, 100, 8, 180.0),
                 ),
             }
         )
