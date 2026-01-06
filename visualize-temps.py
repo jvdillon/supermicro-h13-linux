@@ -231,38 +231,6 @@ def save_npz(data: dict[str, np.ndarray], path: Path) -> None:
     print(f"Saved {path} ({len(data.get('timestamps', []))} samples)")
 
 
-def merge_data(
-    old: dict[str, np.ndarray],
-    new: dict[str, np.ndarray],
-) -> dict[str, np.ndarray]:
-    """Merge old and new data, avoiding duplicates by timestamp."""
-    if not old:
-        return new
-    if not new:
-        return old
-
-    old_ts = set(old.get("timestamps", []))
-
-    # Find indices in new that aren't in old
-    new_ts = new.get("timestamps", np.array([]))
-    mask = np.array([t not in old_ts for t in new_ts])
-
-    if not mask.any():
-        return old  # Nothing new
-
-    # Get all keys from both
-    all_keys = set(old.keys()) | set(new.keys())
-
-    result: dict[str, np.ndarray] = {}
-    for key in all_keys:
-        old_arr = old.get(key, np.array([]))
-        new_arr = new.get(key, np.full(len(new_ts), np.nan))
-        new_filtered = new_arr[mask]
-        result[key] = np.concatenate([old_arr, new_filtered])
-
-    return result
-
-
 def plot_data(
     data: dict[str, np.ndarray], path: Path, since: float | None = None
 ) -> None:
@@ -289,12 +257,34 @@ def plot_data(
         print("No samples to plot", file=sys.stderr)
         return
 
+    # Sort all data by timestamp
+    sort_idx = np.argsort(timestamps)
+    timestamps = timestamps[sort_idx]
+    data = {k: v[sort_idx] if k != "timestamps" else v for k, v in data.items()}
+    data["timestamps"] = timestamps
+
     # Convert to datetime for x-axis
     dates = [datetime.fromtimestamp(t) for t in timestamps]
 
     # Separate zones (fan speeds) from devices (temps)
-    zones = {k: v for k, v in data.items() if k.startswith("z") and k[1:].isdigit()}
-    devices = {k: v for k, v in data.items() if k not in zones and k != "timestamps"}
+    # Filter to arrays matching timestamps length and having any valid data
+    n = len(timestamps)
+    zones = {
+        k: v
+        for k, v in data.items()
+        if k.startswith("z")
+        and k[1:].isdigit()
+        and len(v) == n
+        and not np.isnan(v).all()
+    }
+    devices = {
+        k: v
+        for k, v in data.items()
+        if k not in zones
+        and k != "timestamps"
+        and len(v) == n
+        and not np.isnan(v).all()
+    }
 
     fig, ax1 = plt.subplots(figsize=(14, 7))
 
@@ -335,9 +325,9 @@ def plot_data(
     ax2.set_ylim(0, 100)
     ax2.set_yticks(range(0, 101, 10))
 
-    # Set x-axis limits and ticks
+    # Set x-axis limits and ticks (only go as far back as data exists)
     if since is not None:
-        xlim_left = datetime.fromtimestamp(since)
+        xlim_left = max(datetime.fromtimestamp(since), dates[0])
     else:
         xlim_left = dates[0]
     xlim_right = dates[-1]
@@ -424,16 +414,13 @@ def main() -> None:
             print(f"Failed to load {args.npz}", file=sys.stderr)
             sys.exit(1)
     else:
-        # Load existing data for merging
-        old_data = load_npz(args.output)
-
-        # Determine scrape mode
+        # Scrape from journalctl
         if args.all:
             print("Scraping all history")
-            new_data = parse_journalctl(since=None)
+            data = parse_journalctl(since=None)
         elif since_ts is not None:
             print(f"Scraping since {datetime.fromtimestamp(since_ts)}")
-            new_data = parse_journalctl(since=since_ts)
+            data = parse_journalctl(since=since_ts)
         else:
             # Default: since fan-daemon last started
             start_time = get_service_start_time()
@@ -441,24 +428,18 @@ def main() -> None:
                 print(
                     f"Scraping since service start ({datetime.fromtimestamp(start_time)})"
                 )
-                new_data = parse_journalctl(since=start_time)
+                data = parse_journalctl(since=start_time)
             else:
                 print("Could not get service start time, scraping all")
-                new_data = parse_journalctl(since=None)
+                data = parse_journalctl(since=None)
 
-        new_data = align_data(new_data)
+        data = align_data(data)
 
-        if not new_data:
-            if old_data:
-                print("No new data, using existing")
-                data = old_data
-            else:
-                print("No data found", file=sys.stderr)
-                sys.exit(1)
-        else:
-            # Merge with old data
-            data = merge_data(old_data, new_data)
-            save_npz(data, args.output)
+        if not data:
+            print("No data found", file=sys.stderr)
+            sys.exit(1)
+
+        save_npz(data, args.output)
 
     # Generate plot (since_ts sets xlim if provided)
     if args.plot:
