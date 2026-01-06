@@ -317,15 +317,16 @@ class FanSpeed:
                 ),
                 # GPU: NVIDIA RTX 5090 - throttle 90°C (85%: 77°C)
                 # Zone 0 (case fans): ramp earlier to help GPU cooling
+                # GPU1 runs 7C hotter than GPU0.
                 # When GPU>40:
                 # | Quintile   | GPU0 | GPU1 |
                 # |------------|------|------|
-                # | Min        | 41°C | 41°C |
-                # | 20th       | 74°C | 72°C |
-                # | 40th       | 75°C | 80°C |
-                # | 60th       | 75°C | 82°C |
-                # | 80th       | 76°C | 83°C |
-                # | Max        | 77°C | 86°C |
+                # | Min        | 41°C | 41°C |  0
+                # | 20th       | 74°C | 72°C | -2
+                # | 40th       | 75°C | 80°C |  5
+                # | 60th       | 75°C | 82°C |  7
+                # | 80th       | 76°C | 83°C |  7
+                # | Max        | 77°C | 86°C |  9
                 ("gpu", -1, 0): (
                     (0, 15, None, 60.0),
                     (40, 25, None, 60.0),
