@@ -51,11 +51,17 @@ install_daemon_symlink() {
 }
 
 install_service() {
+    # Detect IPMI services to start after (they may reset fan speeds on boot)
+    IPMI_SERVICES=$(systemctl list-unit-files --type=service --no-legend 2>/dev/null \
+        | awk '{print $1}' \
+        | grep -i 'ipmi' \
+        | tr '\n' ' ')
+
     # Create service file
-    cat > "$SERVICE_FILE" << 'EOF'
+    cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=Fan Control Daemon
-After=network.target
+After=network.target ${IPMI_SERVICES}
 
 [Service]
 Type=simple
